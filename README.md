@@ -10,8 +10,7 @@ Git
 ### 1️⃣ Clonar el Repositorio
 
 ```sh
-git clone https://github.com/<tu-usuario>/gestion_de_candidatos.git
-cd gestion_de_candidatos
+git clone https://github.com/juandiego305/Gestion-candidatos.git
 ```
 
 ### 2️⃣  Activar  Entorno Virtual(Importante)
