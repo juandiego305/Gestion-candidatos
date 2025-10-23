@@ -1,0 +1,17 @@
+(
+venv/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+db.sqlite3
+*.sqlite3
+.env
+.env.*
+/media
+/staticfiles
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+) >> .gitignore
