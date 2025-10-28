@@ -66,32 +66,31 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "gestion_de_candidatos.wsgi.application"
 
-"""
+# Prueba con nueva config: postgresql://postgres:4sLsg873jktoN3vn@db.fkpjhyjcexhhbljexrbb.supabase.co:5432/postgres
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.getenv("DB_NAME"),
-        "USER": os.getenv("DB_USER"),
-        "PASSWORD": os.getenv("DB_PASSWORD"),
-        "HOST": os.getenv("DB_HOST"),
-        "PORT": os.getenv("DB_PORT"),
-        "OPTIONS": {"sslmode": "require"},
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': "postgres",
+        'USER': "postgres",
+        'PASSWORD': "4sLsg873jktoN3vn", 
+        'HOST': "db.fkpjhyjcexhhbljexrbb.supabase.co",
+        'PORT': "5432",
+        
     }
 }
+
 """
 
 DATABASES = {
-    "default": dj_database_url.parse(
-        os.getenv("DATABASE_URL"),
-        conn_max_age=600,
-        ssl_require=True
-    )
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
+    }
 }
 
+"""
 
-# ==========================================================
 # 🔒 CONFIGURACIÓN DE SEGURIDAD Y POLÍTICAS DE CONTRASEÑAS
-# ==========================================================
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -103,25 +102,25 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
-# ==========================================
+
 # 🕒 CONFIGURACIÓN DE SESIÓN E INACTIVIDAD
-# ==========================================
+
 # Cierra sesión automáticamente después de 15 minutos de inactividad
 SESSION_COOKIE_AGE = 900  # 15 minutos (en segundos)
 SESSION_SAVE_EVERY_REQUEST = True  # reinicia el contador con cada acción
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True
 
-# ==========================================
+
 # 🚫 BLOQUEO TEMPORAL TRAS INTENTOS FALLIDOS
-# ==========================================
+
 # Se implementará en core/middleware.py
 # Esta sección permite definir la política
 MAX_FAILED_LOGINS = 3           # número máximo de intentos
 ACCOUNT_LOCK_MINUTES = 5        # minutos de bloqueo temporal
 
-# ==========================================
+
 # ✉️ CONFIGURACIÓN OPCIONAL DE CORREO
-# ==========================================
+
 # Para enviar notificaciones de bloqueo al usuario
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = "smtp.gmail.com"
@@ -131,9 +130,9 @@ EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 
-# ==========================================
+
 # 🌐 OTROS PARÁMETROS GENERALES
-# ==========================================
+
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
 USE_I18N = True
@@ -141,4 +140,4 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
-AUTH_USER_MODEL = "core.Usuario"
+# "Ya se termino la fase de prueba con core.Usuario ahora se volvera a usar auth_user"  AUTH_USER_MODEL = "core.Usuario"

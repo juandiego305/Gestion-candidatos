@@ -104,7 +104,8 @@ class EmpresaSerializer(serializers.ModelSerializer):
 class UsuarioSerializer(serializers.Serializer):
     email = serializers.EmailField()
     nombre = serializers.CharField(max_length=100)
-    rol = serializers.ChoiceField(choices=["admin", "reclutador", "candidato"])
+    rol = serializers.ChoiceField(choices=["Administrador", "Recursos Humanos", "Usuario"])
+    #Cambio en ["admin", "reclutador", "candidato"]
     password = serializers.CharField(write_only=True, min_length=8)
 
     def validate_email(self, value):
