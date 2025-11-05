@@ -1,5 +1,6 @@
 from urllib.parse import urlparse
 from django.db import IntegrityError, transaction
+from django.contrib.auth.models import Group
 from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 from .models import Empresa
@@ -73,6 +74,13 @@ class EmpresaSerializer(serializers.ModelSerializer):
             )
             empresa.logo_url = supabase.storage.from_("logos").get_public_url(path)
             empresa.save(update_fields=["logo_url"])
+        # Si se creó correctamente la empresa, asignar rol de dueño al usuario propietario
+        try:
+            group, _ = Group.objects.get_or_create(name="Dueño de Empresa")
+            request.user.groups.add(group)
+        except Exception:
+            # No bloquear la creación de la empresa si falla el ajuste de grupo
+            pass
         return empresa
 
     def update(self, instance, validated_data):

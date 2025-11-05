@@ -1,3 +1,77 @@
+from django.http import HttpResponse
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import User
+from rest_framework import viewsets, permissions, status
+from rest_framework.response import Response
+from rest_framework.decorators import action
+from rest_framework.views import APIView
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.utils.encoding import force_bytes, force_str
+from django.contrib.auth.tokens import default_token_generator
+from django.core.mail import send_mail
+from django.conf import settings
+
+class PasswordResetRequestView(APIView):
+    """
+    Solicita recuperación de contraseña por email o username.
+    Envía correo con enlace seguro para restablecer.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        identifier = request.data.get("email") or request.data.get("username")
+        if not identifier:
+            return Response({"detail": "Debes enviar email o username."}, status=400)
+
+        UserModel = get_user_model()
+        user = UserModel.objects.filter(email=identifier).first() or UserModel.objects.filter(username=identifier).first()
+        if not user:
+            return Response({"detail": "Usuario no encontrado."}, status=404)
+
+        # Generar token y uid
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = default_token_generator.make_token(user)
+        # Construir enlace (ajusta dominio según tu entorno)
+        reset_url = f"http://127.0.0.1:8000/api/auth/password-reset-confirm/?uid={uid}&token={token}"
+
+        # Enviar correo
+        send_mail(
+            subject="Recuperación de contraseña",
+            message=f"Hola {user.username},\n\nPara restablecer tu contraseña haz clic en el siguiente enlace:\n{reset_url}\n\nSi no solicitaste esto, ignora este mensaje.",
+            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@example.com"),
+            recipient_list=[user.email],
+            fail_silently=True,
+        )
+
+        return Response({"detail": "Correo de recuperación enviado si el usuario existe."}, status=200)
+
+
+class PasswordResetConfirmView(APIView):
+    """
+    Restablece la contraseña usando el token recibido por email.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        uid = request.data.get("uid")
+        token = request.data.get("token")
+        new_password = request.data.get("new_password")
+        if not (uid and token and new_password):
+            return Response({"detail": "Faltan datos."}, status=400)
+
+        try:
+            uid_int = force_str(urlsafe_base64_decode(uid))
+            UserModel = get_user_model()
+            user = UserModel.objects.get(pk=uid_int)
+        except Exception:
+            return Response({"detail": "Usuario inválido."}, status=400)
+
+        if not default_token_generator.check_token(user, token):
+            return Response({"detail": "Token inválido o expirado."}, status=400)
+
+        user.set_password(new_password)
+        user.save()
+        return Response({"detail": "Contraseña restablecida correctamente."}, status=200)
 # core/views.py
 from django.http import HttpResponse
 from django.contrib.auth import get_user_model
@@ -5,6 +79,7 @@ from django.contrib.auth.models import User
 from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
+from rest_framework.views import APIView
 from .serializers_user import UserSerializer
 from .models import Empresa
 from .serializers import (
@@ -13,6 +88,8 @@ from .serializers import (
     _storage_key_from_public_url,
     supabase,
 )
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 User = get_user_model()
 
@@ -290,3 +367,82 @@ class UsuarioViewSet(viewsets.ViewSet):
 
 def home(request):
     return HttpResponse("¡Hola, Django está funcionando correctamente!")
+
+
+class RegisterView(APIView):
+    """
+    Vista pública para registro de usuarios (auto-registro).
+    - Permite que cualquier persona cree una cuenta básica.
+    - El rol siempre se establece como 'Usuario' (no puede ser asignado por el cliente).
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        data = request.data.copy()
+        # Forzar rol por defecto
+        data.pop("role", None)
+        data["role"] = "Usuario"
+
+        serializer = UserSerializer(data=data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = serializer.save()
+        except Exception as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Devolver representación del usuario (sin password)
+        out = UserSerializer(user).data
+        return Response(out, status=status.HTTP_201_CREATED)
+
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    """Permite login con username o email y añade info de usuario/grupos en la respuesta."""
+    def validate(self, attrs):
+        # Permitir login con username o email
+        username_or_email = attrs.get("username")
+        password = attrs.get("password")
+        UserModel = get_user_model()
+
+        # Buscar usuario por username o email
+        user = None
+        if username_or_email:
+            try:
+                user = UserModel.objects.filter(username=username_or_email).first()
+                if not user:
+                    user = UserModel.objects.filter(email=username_or_email).first()
+            except Exception:
+                pass
+
+        if not user:
+            # Si no se encuentra, lanzar error estándar
+            from rest_framework_simplejwt.exceptions import AuthenticationFailed
+            raise AuthenticationFailed("No se encontró usuario con ese username o email.")
+
+        # Reemplazar username en attrs por el username real para que SimpleJWT lo valide
+        attrs["username"] = user.username
+
+        data = super().validate(attrs)
+        self.user = user
+        try:
+            groups = [g.name for g in user.groups.all()]
+        except Exception:
+            groups = []
+
+        data.update({
+            "user": {
+                "id": user.id,
+                "username": getattr(user, "username", ""),
+                "email": getattr(user, "email", ""),
+                "first_name": getattr(user, "first_name", ""),
+                "last_name": getattr(user, "last_name", ""),
+                "groups": groups,
+            }
+        })
+        return data
+
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    """Vista que usa el serializer personalizado para devolver tokens + info de usuario."""
+    serializer_class = CustomTokenObtainPairSerializer
