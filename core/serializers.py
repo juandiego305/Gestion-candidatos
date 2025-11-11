@@ -58,30 +58,45 @@ class EmpresaSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"logo": "Solo JPG o PNG"})
         return data
 
-    def create(self, validated_data):
-        request = self.context["request"]
-        file = validated_data.pop("logo", None)
-        try:
-            with transaction.atomic():
-                empresa = Empresa.objects.create(**validated_data, owner=request.user)
-        except IntegrityError:
-            raise serializers.ValidationError({"nit": "NIT ya registrado"})
+def create(self, validated_data):
+    request = self.context["request"]
+    file = validated_data.pop("logo", None)
 
-        if file:
-            path = f"{empresa.id}/{file.name}"
-            supabase.storage.from_("logos").upload(
-                path, file.read(), {"content-type": getattr(file, "content_type", "image/png")}
-            )
-            empresa.logo_url = supabase.storage.from_("logos").get_public_url(path)
-            empresa.save(update_fields=["logo_url"])
-        # Si se creó correctamente la empresa, asignar rol de dueño al usuario propietario
-        try:
-            group, _ = Group.objects.get_or_create(name="Dueño de Empresa")
-            request.user.groups.add(group)
-        except Exception:
-            # No bloquear la creación de la empresa si falla el ajuste de grupo
-            pass
-        return empresa
+    try:
+        with transaction.atomic():
+            empresa = Empresa.objects.create(**validated_data, owner=request.user)
+    except IntegrityError:
+        raise serializers.ValidationError({"nit": "NIT ya registrado"})
+
+    # Subir logo si existe
+    if file:
+        path = f"{empresa.id}/{file.name}"
+        supabase.storage.from_("logos").upload(
+            path, file.read(), {"content-type": getattr(file, "content_type", "image/png")}
+        )
+        empresa.logo_url = supabase.storage.from_("logos").get_public_url(path)
+        empresa.save(update_fields=["logo_url"])
+
+    # Cambiar rol del dueño
+    user = request.user
+    user.role = "admin"
+    user.save(update_fields=["role"])
+
+    try:
+        supabase.table("usuarios").update({
+            "rol": "Administrador"
+        }).eq("email", user.email).execute()
+    except Exception as e:
+        print(f"⚠️ No se pudo actualizar el rol en Supabase: {e}")
+
+    try:
+        group, _ = Group.objects.get_or_create(name="Dueño de Empresa")
+        user.groups.add(group)
+    except Exception:
+        pass
+
+    return empresa
+
 
     def update(self, instance, validated_data):
         file = validated_data.pop("logo", None)

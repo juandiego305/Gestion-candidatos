@@ -1,6 +1,22 @@
 from django.db import models
 from django.conf import settings
+from django.db import models
+# from django.contrib.auth.models import AbstractUser
+from django.db import models
 
+class Roles:
+    ADMIN = "admin"
+    EMPLEADO_RRHH = "empleado_rrhh"
+    CANDIDATO = "candidato"
+
+    CHOICES = [
+        (ADMIN, "Admin / Dueño de empresa"),
+        (EMPLEADO_RRHH, "Empleado / RRHH"),
+        (CANDIDATO, "Candidato"),
+    ]
+
+
+   
 # ────────────────────────────────────────────────
 # EMPRESA
 # ────────────────────────────────────────────────

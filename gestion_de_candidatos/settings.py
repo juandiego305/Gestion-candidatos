@@ -20,6 +20,10 @@ import dj_database_url
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
+DATABASES = {
+    'default': dj_database_url.config(default=os.getenv('DATABASE_URL'))
+}
+
 
 
 # Quick-start development settings - unsuitable for production
@@ -37,7 +41,7 @@ ALLOWED_HOSTS = []
 # Application definition
 
 INSTALLED_APPS = [
-
+    "core",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -46,15 +50,12 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "rest_framework.authtoken",
-    "core",
     'corsheaders'
-    
 ]
+
 
 REST_FRAMEWORK = {
 
-        
-    
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication",
         "rest_framework.authentication.TokenAuthentication",
@@ -167,3 +168,8 @@ EMAIL_USE_TLS = True
 EMAIL_HOST_USER = 'yef32.0914@gmail.com'
 EMAIL_HOST_PASSWORD = 'mfbl dycv oeap jlco'
 DEFAULT_FROM_EMAIL = 'yef32.0914@gmail.com'
+
+# === Configuración de Supabase ===
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+
