@@ -40,21 +40,59 @@ class Empresa(models.Model):
 # ────────────────────────────────────────────────
 # VACANTE
 # ────────────────────────────────────────────────
+
 class Vacante(models.Model):
-    id_empresa = models.ForeignKey(Empresa, on_delete=models.CASCADE, related_name="vacantes")
+    ESTADOS = [
+        ('Borrador', 'Borrador'),
+        ('Publicado', 'Publicado'),
+    ]
+
+    id_empresa = models.ForeignKey(
+        'core.Empresa',
+        on_delete=models.CASCADE,
+        db_column='id_empresa',
+        related_name='vacantes'
+    )
+    titulo = models.CharField(max_length=200)
+    descripcion = models.TextField()
+    requisitos = models.TextField()
+    fecha_expiracion = models.DateTimeField()
+    estado = models.CharField(max_length=20, choices=ESTADOS, default='Borrador')
+
+    # la columna en Supabase se llama creado_por_id
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        db_column='creado_por_id',
+        related_name='vacantes_creadas'
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        db_table = 'core_vacantes'   # 👈 nombre EXACTO de la tabla
+        managed = False              # 👈 no tocará la tabla con migraciones
+
     def __str__(self):
-        return f"Vacante {self.id} - Empresa {self.id_empresa.nombre}"
+        return f"Vacante: {self.titulo} - Empresa: {self.id_empresa.nombre}"
 
 
 # ────────────────────────────────────────────────
 # COMPETENCIA
 # ────────────────────────────────────────────────
 class Competencia(models.Model):
-    id_vacante = models.ForeignKey(Vacante, on_delete=models.CASCADE, related_name="competencias")
+    id_vacante = models.ForeignKey(
+        Vacante,
+        on_delete=models.CASCADE,
+        related_name="competencias",
+        db_column="id_vacante",   # 👈 MUY IMPORTANTE
+    )
     nombre = models.CharField(max_length=100, null=True, blank=True)
+
+    class Meta:
+        db_table = "core_competencia"  # 👈 Nombre real de la tabla en Supabase
+        managed = False                # 👈 Para que Django NO intente crear/alterar esta tabla
 
     def __str__(self):
         return self.nombre or f"Competencia {self.id}"

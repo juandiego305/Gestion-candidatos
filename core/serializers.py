@@ -5,6 +5,7 @@ from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 from .models import Empresa
 from .supabase_client import supabase
+from .models import Vacante
 
 ALLOWED_TYPES = {"image/jpeg", "image/png"}
 
@@ -120,6 +121,10 @@ def create(self, validated_data):
         instance.save()
         return instance
 
+class VacanteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Vacante
+        fields = ['id', 'titulo', 'descripcion', 'requisitos', 'fecha_expiracion', 'estado', 'id_empresa', 'creado_por']
 
 # ─────────────────────────────────────────────────────────────────────────────
 # USUARIOS (Historia de Usuario 2)

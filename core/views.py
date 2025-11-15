@@ -1,5 +1,4 @@
 # core/views.py
-
 from django.http import HttpResponse
 from django.contrib.auth import get_user_model
 from rest_framework import viewsets, permissions, status
@@ -19,15 +18,274 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from .models import Roles
 from supabase import create_client
 from rest_framework import generics, permissions
+from django.http import JsonResponse
+from rest_framework.decorators import api_view
+from django.contrib.auth.decorators import login_required
+from django.utils import timezone
+from .models import Vacante, Empresa
+from .serializers import VacanteSerializer
+from datetime import datetime
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from datetime import datetime
+from django.shortcuts import get_object_or_404
+
+
+
 
 supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
 
-
+def get_supabase_role(user):
+    """
+    Obtiene el campo 'role' desde la tabla auth_user de Supabase
+    usando el id del usuario de Django.
+    """
+    try:
+        resp = supabase.table("auth_user").select("role").eq("id", user.id).execute()
+        if resp.data and len(resp.data) > 0:
+            role = resp.data[0].get("role")
+            print("🔥 Rol desde Supabase:", role)
+            return role
+        else:
+            print("⚠️ Usuario no encontrado en Supabase para id:", user.id)
+            return None
+    except Exception as e:
+        print("⚠️ Error obteniendo rol de Supabase:", e)
+        return None
 
 User = get_user_model()
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def crear_vacante(request):
+
+    # 1. Obtener rol desde Supabase
+    role = get_supabase_role(request.user)
+    print("🔥 Rol obtenido desde Supabase:", role)
+
+    if role != 'admin':
+        return JsonResponse(
+            {'error': 'Solo un administrador puede crear vacantes.'},
+            status=403
+        )
+
+    data = request.data
+
+    titulo = data.get('titulo')
+    descripcion = data.get('descripcion')
+    requisitos = data.get('requisitos')
+    fecha_expiracion_str = data.get('fecha_expiracion')
+    empresa_id = data.get('empresa_id')
+
+    if not all([titulo, descripcion, requisitos, fecha_expiracion_str, empresa_id]):
+        return JsonResponse({'error': 'Todos los campos son requeridos.'}, status=400)
+
+    # 2. Convertir fecha naive -> aware
+    try:
+        fecha_naive = datetime.fromisoformat(fecha_expiracion_str)
+        fecha_expiracion = timezone.make_aware(fecha_naive, timezone.get_current_timezone())
+
+        if fecha_expiracion < timezone.now():
+            return JsonResponse({'error': 'La fecha de expiración no puede ser en el pasado.'}, status=400)
+
+    except Exception:
+        return JsonResponse({'error': 'Formato de fecha inválido. Usa YYYY-MM-DDTHH:MM:SS'}, status=400)
+
+    # 3. Validar empresa
+    try:
+        empresa = Empresa.objects.get(id=empresa_id)
+    except Empresa.DoesNotExist:
+        return JsonResponse({'error': 'La empresa especificada no existe.'}, status=400)
+
+    # 4. Crear vacante
+    vacante = Vacante.objects.create(
+        titulo=titulo,
+        descripcion=descripcion,
+        requisitos=requisitos,
+        fecha_expiracion=fecha_expiracion,
+        id_empresa=empresa,
+        creado_por=request.user,
+    )
+
+    return JsonResponse(
+        {'message': 'Vacante creada exitosamente', 'vacante_id': vacante.id},
+        status=201
+    )
 
 
+
+@api_view(['PUT', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def actualizar_vacante(request, vacante_id):
+    # 1. Verificar rol
+    role = get_supabase_role(request.user)
+    if role != 'admin':
+        return JsonResponse(
+            {'error': 'Solo los administradores pueden actualizar vacantes.'},
+            status=403
+        )
+
+    # 2. Obtener la vacante o 404
+    vacante = get_object_or_404(Vacante, id=vacante_id)
+
+    data = request.data
+
+    # 3. Actualizar campos solo si vienen en el body
+    titulo = data.get('titulo')
+    descripcion = data.get('descripcion')
+    requisitos = data.get('requisitos')
+    fecha_expiracion_str = data.get('fecha_expiracion')
+    estado = data.get('estado')
+
+    if titulo is not None:
+        vacante.titulo = titulo
+
+    if descripcion is not None:
+        vacante.descripcion = descripcion
+
+    if requisitos is not None:
+        vacante.requisitos = requisitos
+
+    if estado is not None:
+        # Solo permitir valores válidos
+        if estado not in ['Borrador', 'Publicado']:
+            return JsonResponse(
+                {'error': 'Estado inválido. Use "Borrador" o "Publicado".'},
+                status=400
+            )
+        vacante.estado = estado
+
+    if fecha_expiracion_str is not None:
+        try:
+            fecha_naive = datetime.fromisoformat(fecha_expiracion_str)
+            fecha_expiracion = timezone.make_aware(
+                fecha_naive,
+                timezone.get_current_timezone()
+            )
+        except ValueError:
+            return JsonResponse(
+                {'error': 'Formato de fecha_expiracion inválido. Use ISO 8601.'},
+                status=400
+            )
+
+        if fecha_expiracion < timezone.now():
+            return JsonResponse(
+                {'error': 'La fecha de expiración no puede ser en el pasado.'},
+                status=400
+            )
+
+        vacante.fecha_expiracion = fecha_expiracion
+
+    vacante.save()
+
+    return JsonResponse({
+        'message': 'Vacante actualizada correctamente',
+        'vacante': {
+            'id': vacante.id,
+            'titulo': vacante.titulo,
+            'descripcion': vacante.descripcion,
+            'requisitos': vacante.requisitos,
+            'fecha_expiracion': vacante.fecha_expiracion,
+            'estado': vacante.estado,
+            'empresa_id': vacante.id_empresa_id,
+        }
+    }, status=200)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def eliminar_vacante(request, vacante_id):
+    # 1. Verificar rol
+    role = get_supabase_role(request.user)
+    if role != 'admin':
+        return JsonResponse(
+            {'error': 'Solo los administradores pueden eliminar vacantes.'},
+            status=403
+        )
+
+    # 2. Obtener la vacante o 404
+    vacante = get_object_or_404(Vacante, id=vacante_id)
+
+    vacante.delete()
+
+    return JsonResponse(
+        {'message': f'Vacante {vacante_id} eliminada correctamente.'},
+        status=200
+    )
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def publicar_vacante(request, vacante_id):
+    # 1. Verificar rol
+    role = get_supabase_role(request.user)
+    if role != 'admin':
+        return JsonResponse(
+            {'error': 'Solo los administradores pueden publicar vacantes.'},
+            status=403
+        )
+
+    # 2. Obtener la vacante o 404
+    vacante = get_object_or_404(Vacante, id=vacante_id)
+
+    # 3. Validar fecha de expiración
+    if vacante.fecha_expiracion and vacante.fecha_expiracion < timezone.now():
+        return JsonResponse(
+            {'error': 'No se puede publicar una vacante con fecha de expiración pasada.'},
+            status=400
+        )
+
+    vacante.estado = 'Publicado'
+    vacante.save()
+
+    return JsonResponse({
+        'message': 'Vacante publicada correctamente.',
+        'vacante': {
+            'id': vacante.id,
+            'titulo': vacante.titulo,
+            'estado': vacante.estado,
+            'fecha_expiracion': vacante.fecha_expiracion,
+        }
+    }, status=200)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def listar_vacantes(request):
+    """Lista vacantes según el rol del usuario."""
+    role = get_supabase_role(request.user)
+
+    # --- ADMIN: ve todas las vacantes ---
+    if role == "admin":
+        vacantes = Vacante.objects.all()
+
+    # --- EMPLEADO_RRHH: ve solo las de su empresa ---
+    elif role == "empleado_rrhh":
+        try:
+            empresa_id = Empresa.objects.get(owner=request.user).id
+        except Empresa.DoesNotExist:
+            return JsonResponse(
+                {"error": "No tienes una empresa asociada."},
+                status=400
+            )
+        vacantes = Vacante.objects.filter(id_empresa_id=empresa_id)
+
+    # --- CANDIDATO: solo vacantes publicadas ---
+    else:
+        vacantes = Vacante.objects.filter(estado="Publicado")
+
+    data = []
+    for v in vacantes:
+        data.append({
+            "id": v.id,
+            "titulo": v.titulo,
+            "descripcion": v.descripcion,
+            "requisitos": v.requisitos,
+            "fecha_expiracion": v.fecha_expiracion,
+            "estado": v.estado,
+            "empresa_id": v.id_empresa_id,
+            "empresa_nombre": v.id_empresa.nombre,
+        })
+
+    return JsonResponse(data, safe=False, status=200)
 # ----------------------------
 # Permisos
 # ----------------------------
@@ -118,8 +376,11 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
         # Buscar el rol en Supabase por email
         try:
-            sup_user = supabase.table("usuarios").select("rol").eq("email", user.email).execute()
-            role = sup_user.data[0]["rol"] if sup_user.data else "candidato"
+            sup_user = supabase.table("auth_user").select("role").eq("id", user.id).execute()
+            if sup_user.data:
+                role = sup_user.data[0].get("role", "candidato")
+            else:
+                     role = "candidato"
         except Exception as e:
             print(f"⚠️ Error obteniendo rol de Supabase: {e}")
             role = "candidato"
