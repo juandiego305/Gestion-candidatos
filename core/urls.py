@@ -23,6 +23,6 @@ urlpatterns = [
     path('vacantes/<int:vacante_id>/editar/', views.actualizar_vacante, name='actualizar_vacante'),
     path('vacantes/<int:vacante_id>/eliminar/', views.eliminar_vacante, name='eliminar_vacante'),
     path('vacantes/<int:vacante_id>/publicar/', views.publicar_vacante, name='publicar_vacante'),
-    path('vacantes/', views.listar_vacantes, name='listar_vacantes'),
+    path('vacantes/', views.listar_vacantes, name='listar_vacantes')
 
 ]

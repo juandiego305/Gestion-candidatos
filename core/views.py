@@ -15,7 +15,7 @@ from .models import Empresa
 from .serializers import EmpresaSerializer, UsuarioSerializer, supabase
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
-from .models import Roles 
+from .models import Roles
 from supabase import create_client
 from rest_framework import generics, permissions
 from django.http import JsonResponse
@@ -27,8 +27,8 @@ from .serializers import VacanteSerializer
 from datetime import datetime
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
-from datetime import datetime
 from django.shortcuts import get_object_or_404
+
 
 
 
@@ -250,14 +250,29 @@ def publicar_vacante(request, vacante_id):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def listar_vacantes(request):
-    """Lista vacantes según el rol del usuario."""
+    """
+    Lista vacantes según el rol del usuario.
+
+    - Admin:
+        - Si envía ?empresa_id=X → solo esa empresa.
+        - Si no envía → todas las vacantes.
+    - Empleado RRHH:
+        - Siempre solo las vacantes de SU empresa (ignora empresa_id del query).
+    - Candidato:
+        - Solo vacantes en estado "Publicado".
+        - Si envía ?empresa_id=X → solo publicadas de esa empresa.
+    """
     role = get_supabase_role(request.user)
+    empresa_param = request.GET.get("empresa_id")
 
-    # --- ADMIN: ve todas las vacantes ---
+    # --- ADMIN: ve todas o filtra por empresa_id si viene en el query ---
     if role == "admin":
-        vacantes = Vacante.objects.all()
+        if empresa_param:
+            vacantes = Vacante.objects.filter(id_empresa_id=empresa_param)
+        else:
+            vacantes = Vacante.objects.all()
 
-    # --- EMPLEADO_RRHH: ve solo las de su empresa ---
+    # --- EMPLEADO_RRHH: ve solo las de su empresa (ignora empresa_param) ---
     elif role == "empleado_rrhh":
         try:
             empresa_id = Empresa.objects.get(owner=request.user).id
@@ -268,9 +283,11 @@ def listar_vacantes(request):
             )
         vacantes = Vacante.objects.filter(id_empresa_id=empresa_id)
 
-    # --- CANDIDATO: solo vacantes publicadas ---
+    # --- CANDIDATO: solo vacantes publicadas, con filtro opcional por empresa ---
     else:
         vacantes = Vacante.objects.filter(estado="Publicado")
+        if empresa_param:
+            vacantes = vacantes.filter(id_empresa_id=empresa_param)
 
     data = []
     for v in vacantes:
@@ -316,6 +333,7 @@ class IsAdminUserOrReadSelf(permissions.BasePermission):
         if request.user.role == "admin":
             return  obj.empresa_id == request.user.empresa_id
         return obj.get("email") == getattr(request.user, "email", None) or getattr(obj, "id", None) == getattr(request.user, "id", None)
+
 
 # ----------------------------
 # Home
@@ -418,48 +436,60 @@ class EmpresaViewSet(viewsets.ModelViewSet):
         return context
 
     def perform_create(self, serializer):
+        """
+        Cuando un usuario crea una empresa:
+        1️⃣ Se guarda la empresa con su usuario como owner.
+        2️⃣ Se actualiza su rol en Django.
+        3️⃣ Se sincroniza el rol y grupo 'admin' en Supabase.
+        """
         user = self.request.user
-        logo_file = self.request.FILES.get("logo")
 
         # Crear empresa vinculada al usuario autenticado
-        empresa = serializer.save()
+        empresa = serializer.save(owner=user)
 
-        # Subir logo si existe
-        if logo_file:
-            path = f"{empresa.id}/{logo_file.name}"
-            try:
-                supabase.storage.from_("logos").upload(
-                    path, logo_file.read(), {"content-type": getattr(logo_file, "content_type", "image/png")}
-                )
-                empresa.logo_url = supabase.storage.from_("logos").get_public_url(path)
-                empresa.save(update_fields=["logo_url"])
-            except Exception as e:
-                print(f"⚠️ Error subiendo logo a Supabase: {e}")
-
-        # Actualizar rol local a admin
+        # --- 1️⃣ Actualizar rol en Django ---
         if hasattr(user, "role"):
             user.role = "admin"
             user.save(update_fields=["role"])
+            print(f"✅ Rol del usuario '{user.username}' actualizado a ADMIN en Django")
 
-        # Sincronizar rol en Supabase (intento silencioso)
+        # --- 2️⃣ Sincronizar con Supabase ---
         try:
+            # Buscar el usuario en Supabase por email
             sup_user = supabase.table("auth_user").select("id").eq("email", user.email).execute()
+
             if not sup_user.data:
                 print(f"⚠️ Usuario {user.email} no encontrado en Supabase.")
-                return empresa
+                return
+
             user_id = sup_user.data[0]["id"]
+
+            # 🔹 Actualizar rol en la tabla usuarios
             supabase.table("auth_user").update({"role": "admin"}).eq("id", user_id).execute()
+            print(f"✅ Rol de {user.email} actualizado a 'admin' en Supabase.")
+
+            # 🔹 Obtener ID del grupo 'admin'
             group_res = supabase.table("auth_group").select("id").eq("name", "admin").execute()
             if not group_res.data:
                 print("⚠️ El grupo 'admin' no existe en Supabase.")
-                return empresa
+                return
+
             group_id = group_res.data[0]["id"]
+
+            # 🔹 Eliminar grupos anteriores del usuario
             supabase.table("auth_user_groups").delete().eq("user_id", user_id).execute()
-            supabase.table("auth_user_groups").insert({"user_id": user_id, "group_id": group_id}).execute()
+
+            # 🔹 Asignar grupo admin
+            supabase.table("auth_user_groups").insert({
+                "user_id": user_id,
+                "group_id": group_id
+            }).execute()
+
+            print(f"✅ Usuario {user.email} asignado correctamente al grupo 'admin' en Supabase.")
+
         except Exception as e:
             print(f"⚠️ Error actualizando rol en Supabase: {e}")
-        return empresa
-
+            return empresa
 
 # ----------------------------
 # Usuarios
@@ -513,10 +543,9 @@ class UsuarioViewSet(viewsets.ViewSet):
 
         if request.user.role != "admin" and usuario.get("email") != request.user.email:
             return Response({"detail": "No autorizado"}, status=status.HTTP_403_FORBIDDEN)
-        
-        forbidden = set(request.data.keys()) & {"rol", "email", "id"}
-        if forbidden:
-            return Response({"detail": "No autorizado para cambiar esos campos"}, status=status.HTTP_403_FORBIDDEN)
+            forbidden = set(request.data.keys()) & {"rol", "email", "id"}
+            if forbidden:
+                return Response({"detail": "No autorizado para cambiar esos campos"}, status=status.HTTP_403_FORBIDDEN)
 
         update_payload = request.data.copy()
         try:
@@ -556,24 +585,7 @@ class UsuarioViewSet(viewsets.ViewSet):
         nuevo_rol = request.data.get("rol")
         if not nuevo_rol:
             return Response({"detail": "Debe especificar el nuevo rol"}, status=status.HTTP_400_BAD_REQUEST)
-        group_res = supabase.table("auth_group").select("id").eq("name", nuevo_rol).execute()
-        if not group_res.data:
-            return Response({"detail": f"El rol '{nuevo_rol}' no existe"}, status=status.HTTP_404_NOT_FOUND)
-        group_id = group_res.data[0]["id"]
-        
-        supabase.table("auth_user_groups").delete().eq("user_id", pk).execute()
-        supabase.table("auth_user_groups").insert({"user_id": pk, "group_id": group_id}).execute()
-        return Response({"message": f"Rol actualizado a '{nuevo_rol}'"}, status=status.HTTP_200_OK)
-
-    def destroy(self, request, pk=None):
-        if request.user.role != "admin":
-            return Response({"detail": "No autorizado"}, status=status.HTTP_403_FORBIDDEN)
-        try:
-            supabase.table("auth_user_groups").delete().eq("user_id", pk).execute()
-            supabase.table("usuarios").delete().eq("id", pk).execute()
-        except Exception as e:
-            return Response({"detail": f"Error al eliminar: {e}"}, status=status.HTTP_400_BAD_REQUEST)
-        return Response({"message": "Usuario eliminado correctamente"}, status=status.HTTP_204_NO_CONTENT)
+        group_res = supabase
 
     
     # ----------------------------
