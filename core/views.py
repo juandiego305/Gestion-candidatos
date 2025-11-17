@@ -595,18 +595,17 @@ class EmpresaViewSet(viewsets.ModelViewSet):
         context = super().get_serializer_context()
         context["request"] = self.request
         return context
-
-    def perform_create(self, serializer):
+def perform_create(self, serializer):
         """
         Cuando un usuario crea una empresa:
-        1️⃣ Se guarda la empresa con su usuario como owner.
+        1️⃣ Se guarda la empresa con su usuario como owner (lo hace el serializer).
         2️⃣ Se actualiza su rol en Django.
         3️⃣ Se sincroniza el rol y grupo 'admin' en Supabase.
         """
         user = self.request.user
 
-        # Crear empresa vinculada al usuario autenticado
-        empresa = serializer.save(owner=user)
+        # 🔹 IMPORTANTE: ya NO pasamos owner=user aquí
+        empresa = serializer.save()
 
         # --- 1️⃣ Actualizar rol en Django ---
         if hasattr(user, "role"):

@@ -26,6 +26,7 @@ class Empresa(models.Model):
     direccion = models.CharField(max_length=200)
     logo_url = models.URLField(blank=True)
     # Usa el usuario por defecto de Django (auth_user)
+    descripcion = models.TextField(null=True, blank=True)
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
