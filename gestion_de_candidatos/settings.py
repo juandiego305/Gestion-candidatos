@@ -50,6 +50,8 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "rest_framework.authtoken",
+    "drf_spectacular",
+    "drf_spectacular_sidecar",
     'corsheaders'
 ]
 
@@ -64,6 +66,16 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "API TalentoHub - Gestión de Candidatos",
+    "DESCRIPTION": "Documentación de los endpoints de autenticación, empresas y gestión de vacantes.",
+    "VERSION": "1.0.0",
+
+    # Opcional, pero útil:
+    "SERVE_INCLUDE_SCHEMA": False,
 }
 
 MIDDLEWARE = [
