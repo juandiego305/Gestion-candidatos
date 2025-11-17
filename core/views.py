@@ -159,6 +159,14 @@ def actualizar_vacante(request, vacante_id):
     fecha_expiracion_str = data.get('fecha_expiracion')
     estado = data.get('estado')
 
+    # Nuevos campos
+    ubicacion = data.get('ubicacion')
+    salario = data.get('salario')
+    experiencia = data.get('experiencia')
+    beneficios = data.get('beneficios')
+    tipo_jornada = data.get('tipo_jornada')
+    modalidad_trabajo = data.get('modalidad_trabajo')
+
     if titulo is not None:
         vacante.titulo = titulo
 
@@ -198,6 +206,31 @@ def actualizar_vacante(request, vacante_id):
 
         vacante.fecha_expiracion = fecha_expiracion
 
+    # 🔹 Actualizar campos nuevos si vienen
+    if ubicacion is not None:
+        vacante.ubicacion = ubicacion
+
+    if salario is not None:
+        vacante.salario = salario  # Django lo castea a Decimal si el modelo es DecimalField
+
+    if experiencia is not None:
+        vacante.experiencia = experiencia
+
+    if beneficios is not None:
+        vacante.beneficios = beneficios
+
+    if tipo_jornada is not None:
+        vacante.tipo_jornada = tipo_jornada
+
+    if modalidad_trabajo is not None:
+        MODALIDADES_VALIDAS = ["Hibrido", "Remoto", "Presencial"]
+        if modalidad_trabajo not in MODALIDADES_VALIDAS:
+            return JsonResponse(
+                {'error': f'modalidad_trabajo debe ser una de: {", ".join(MODALIDADES_VALIDAS)}'},
+                status=400
+            )
+        vacante.modalidad_trabajo = modalidad_trabajo
+
     vacante.save()
 
     return JsonResponse({
@@ -210,6 +243,13 @@ def actualizar_vacante(request, vacante_id):
             'fecha_expiracion': vacante.fecha_expiracion,
             'estado': vacante.estado,
             'empresa_id': vacante.id_empresa_id,
+
+            'ubicacion': vacante.ubicacion,
+            'salario': str(vacante.salario) if vacante.salario is not None else None,
+            'experiencia': vacante.experiencia,
+            'beneficios': vacante.beneficios,
+            'tipo_jornada': vacante.tipo_jornada,
+            'modalidad_trabajo': vacante.modalidad_trabajo,
         }
     }, status=200)
 
@@ -234,7 +274,6 @@ def eliminar_vacante(request, vacante_id):
         {'message': f'Vacante {vacante_id} eliminada correctamente.'},
         status=200
     )
-
 @api_view(['PATCH'])
 @permission_classes([IsAuthenticated])
 def publicar_vacante(request, vacante_id):
@@ -264,8 +303,19 @@ def publicar_vacante(request, vacante_id):
         'vacante': {
             'id': vacante.id,
             'titulo': vacante.titulo,
-            'estado': vacante.estado,
+            'descripcion': vacante.descripcion,
+            'requisitos': vacante.requisitos,
             'fecha_expiracion': vacante.fecha_expiracion,
+            'estado': vacante.estado,
+            'empresa_id': vacante.id_empresa_id,
+            'empresa_nombre': vacante.id_empresa.nombre,
+
+            'ubicacion': vacante.ubicacion,
+            'salario': str(vacante.salario) if vacante.salario is not None else None,
+            'experiencia': vacante.experiencia,
+            'beneficios': vacante.beneficios,
+            'tipo_jornada': vacante.tipo_jornada,
+            'modalidad_trabajo': vacante.modalidad_trabajo,
         }
     }, status=200)
 
