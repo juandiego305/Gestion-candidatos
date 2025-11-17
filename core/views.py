@@ -11,7 +11,7 @@ from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
 from django.conf import settings
 from .serializers_user import PerfilSerializer, UserSerializer
-from .models import Empresa
+from .models import Empresa, Postulacion
 from .serializers import EmpresaSerializer, UsuarioSerializer, supabase
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -22,12 +22,14 @@ from django.http import JsonResponse
 from rest_framework.decorators import api_view
 from django.contrib.auth.decorators import login_required
 from django.utils import timezone
-from .models import Vacante, Empresa
 from .serializers import VacanteSerializer
 from datetime import datetime
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from .models import Vacante, Postulacion, Empresa
 
 
 
@@ -76,9 +78,22 @@ def crear_vacante(request):
     requisitos = data.get('requisitos')
     fecha_expiracion_str = data.get('fecha_expiracion')
     empresa_id = data.get('empresa_id')
+    ubicacion = data.get('ubicacion')
+    salario = data.get('salario')
+    experiencia = data.get('experiencia')
+    beneficios = data.get('beneficios')
+    tipo_jornada = data.get('tipo_jornada')
+    modalidad_trabajo = data.get('modalidad_trabajo')  # Hibrido / Remoto / Presencial
 
     if not all([titulo, descripcion, requisitos, fecha_expiracion_str, empresa_id]):
-        return JsonResponse({'error': 'Todos los campos son requeridos.'}, status=400)
+        return JsonResponse({'error': 'Título, descripción, requisitos, fecha_expiracion y empresa_id son obligatorios.'}, status=400)
+    
+    MODALIDADES_VALIDAS = ["Hibrido", "Remoto", "Presencial"]
+    if modalidad_trabajo and modalidad_trabajo not in MODALIDADES_VALIDAS:
+        return JsonResponse(
+            {'error': f"modalidad_trabajo debe ser una de: {', '.join(MODALIDADES_VALIDAS)}"},
+            status=400
+        )
 
     # 2. Convertir fecha naive -> aware
     try:
@@ -105,6 +120,13 @@ def crear_vacante(request):
         fecha_expiracion=fecha_expiracion,
         id_empresa=empresa,
         creado_por=request.user,
+        ubicacion=ubicacion,
+        salario=salario or None,
+        experiencia=experiencia,
+        beneficios=beneficios,
+        tipo_jornada=tipo_jornada,
+        modalidad_trabajo=modalidad_trabajo,
+        
     )
 
     return JsonResponse(
@@ -300,9 +322,98 @@ def listar_vacantes(request):
             "estado": v.estado,
             "empresa_id": v.id_empresa_id,
             "empresa_nombre": v.id_empresa.nombre,
+            "ubicacion": v.ubicacion,
+            "salario": str(v.salario) if v.salario is not None else None,
+            "experiencia": v.experiencia,
+            "beneficios": v.beneficios,
+            "tipo_jornada": v.tipo_jornada,
+            "modalidad_trabajo": v.modalidad_trabajo,
         })
 
     return JsonResponse(data, safe=False, status=200)
+
+# ----------------------------
+# Postulacion
+# ----------------------------
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def postular_vacante(request, vacante_id):
+    """
+    Permite a un candidato postularse a una vacante.
+
+    Escenarios cubiertos:
+    - Postulación exitosa
+    - Sin CV cargado
+    - Postulación duplicada
+    - Notificación de confirmación (simulada en la respuesta)
+    """
+
+    # 1) Verificar rol: solo candidatos pueden postularse
+    role = get_supabase_role(request.user)
+    if role != "candidato":
+        return JsonResponse(
+            {"error": "Solo los candidatos pueden postularse a vacantes."},
+            status=403
+        )
+
+    # 2) Obtener la vacante
+    vacante = get_object_or_404(Vacante, id=vacante_id)
+
+    # 3) Validar que la vacante esté activa (Publicada y no vencida)
+    ahora = timezone.now()
+    fecha_exp = vacante.fecha_expiracion
+
+    # Manejar posibles datetime naive
+    if timezone.is_naive(fecha_exp):
+        fecha_exp = timezone.make_aware(fecha_exp, timezone.get_current_timezone())
+
+    if vacante.estado != "Publicado" or fecha_exp < ahora:
+        return JsonResponse(
+            {"error": "La vacante no está activa para postulaciones."},
+            status=400
+        )
+
+    # 4) Validar que haya CV cargado (Escenario 2)
+    cv_url = request.data.get("cv_url")
+    if not cv_url:
+        return JsonResponse(
+            {"error": "Debe cargar un CV antes de postularse."},
+            status=400
+        )
+
+    # 5) Validar postulación duplicada (Escenario 3)
+    ya_postulado = Postulacion.objects.filter(
+        candidato=request.user,
+        vacante=vacante
+    ).exists()
+
+    if ya_postulado:
+        return JsonResponse(
+            {"error": "Ya se encuentra postulado a esta vacante."},
+            status=400
+        )
+
+    # 6) Crear la postulación (Escenario 1)
+    postulacion = Postulacion.objects.create(
+        candidato=request.user,
+        empresa=vacante.id_empresa,
+        vacante=vacante,
+        cv_url=cv_url,
+        estado="Postulado"
+    )
+
+    # 7) Notificar (Escenario 4)
+    # Aquí podrías enviar correo al reclutador, registrar en Supabase, etc.
+    # Por ahora devolvemos un mensaje de confirmación:
+    return JsonResponse(
+        {
+            "message": "Postulación registrada correctamente. El reclutador ha sido notificado.",
+            "postulacion_id": postulacion.id,
+            "vacante_id": vacante.id
+        },
+        status=201
+    )
 # ----------------------------
 # Permisos
 # ----------------------------

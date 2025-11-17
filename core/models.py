@@ -47,6 +47,12 @@ class Vacante(models.Model):
         ('Publicado', 'Publicado'),
     ]
 
+    MODALIDADES = [
+        ('Hibrido', 'Híbrido'),
+        ('Remoto', 'Remoto'),
+        ('Presencial', 'Presencial'),
+    ]
+
     id_empresa = models.ForeignKey(
         'core.Empresa',
         on_delete=models.CASCADE,
@@ -58,6 +64,17 @@ class Vacante(models.Model):
     requisitos = models.TextField()
     fecha_expiracion = models.DateTimeField()
     estado = models.CharField(max_length=20, choices=ESTADOS, default='Borrador')
+    ubicacion = models.CharField(max_length=255, null=True, blank=True)
+    salario = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    experiencia = models.CharField(max_length=255, null=True, blank=True)
+    beneficios = models.TextField(null=True, blank=True)
+    tipo_jornada = models.CharField(max_length=50, null=True, blank=True)
+    modalidad_trabajo = models.CharField(
+        max_length=20,
+        choices=MODALIDADES,
+        null=True,
+        blank=True,
+    )
 
     # la columna en Supabase se llama creado_por_id
     creado_por = models.ForeignKey(
@@ -102,18 +119,41 @@ class Competencia(models.Model):
 # POSTULACIÓN
 # ────────────────────────────────────────────────
 class Postulacion(models.Model):
-    fecha_postulacion = models.DateTimeField(auto_now_add=True)
-    estado = models.CharField(max_length=50)
+    ESTADOS = [
+        ("Postulado", "Postulado"),
+        ("En revisión", "En revisión"),
+        ("Rechazado", "Rechazado"),
+        ("Aceptado", "Aceptado"),
+    ]
+
     candidato = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="postulaciones"
+        related_name="postulaciones",
+        db_column="candidato_id",   # columna real en la BD
     )
+
+    vacante = models.ForeignKey(
+        Vacante,
+        on_delete=models.CASCADE,
+        related_name="postulaciones",
+        db_column="id_vacante",     # 👈 coincide con el CREATE TABLE
+    )
+
     empresa = models.ForeignKey(
         Empresa,
         on_delete=models.CASCADE,
-        related_name="postulaciones"
+        related_name="postulaciones",
+        db_column="empresa_id",
     )
 
+    cv_url = models.URLField(null=True, blank=True)
+    estado = models.CharField(max_length=50, choices=ESTADOS, default="Postulado")
+    fecha_postulacion = models.DateTimeField()
+
+    class Meta:
+        db_table = "core_postulaciones"  # 👈 nombre exacto de la tabla
+        managed = False                  # 👈 Django NO crea/borra esta tabla
+
     def __str__(self):
-        return f"{self.candidato.username} - {self.empresa.nombre}"
+        return f"{self.candidato.username} - {self.vacante.titulo}"
