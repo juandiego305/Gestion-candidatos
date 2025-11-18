@@ -1,8 +1,7 @@
 from django.db import models
 from django.conf import settings
-from django.db import models
+from django.contrib.auth.models import User  # 👈 AGREGAR ESTA IMPORTACIÓN
 # from django.contrib.auth.models import AbstractUser
-from django.db import models
 
 class Roles:
     ADMIN = "admin"
@@ -14,7 +13,6 @@ class Roles:
         (EMPLEADO_RRHH, "Empleado / RRHH"),
         (CANDIDATO, "Candidato"),
     ]
-
 
    
 # ────────────────────────────────────────────────
@@ -158,3 +156,12 @@ class Postulacion(models.Model):
 
     def __str__(self):
         return f"{self.candidato.username} - {self.vacante.titulo}"
+
+class EmpresaEmpleado(models.Model):
+    empresa = models.ForeignKey(Empresa, on_delete=models.CASCADE)
+    usuario = models.ForeignKey(User, on_delete=models.CASCADE)  # 👈 AHORA User ESTÁ IMPORTADO
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "core_empresa_empleados"
+        unique_together = ('empresa', 'usuario')

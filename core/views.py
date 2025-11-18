@@ -12,7 +12,7 @@ from django.core.mail import send_mail
 from django.conf import settings
 from .serializers_user import PerfilSerializer, UserSerializer
 from .models import Empresa, Postulacion
-from .serializers import EmpresaSerializer, UsuarioSerializer, supabase
+from .serializers import EmpresaSerializer, UsuarioSerializer
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
 from .models import Roles
@@ -22,7 +22,7 @@ from django.http import JsonResponse
 from rest_framework.decorators import api_view
 from django.contrib.auth.decorators import login_required
 from django.utils import timezone
-from .serializers import VacanteSerializer
+from .serializers import VacanteSerializer, PostulacionSerializer
 from datetime import datetime
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -531,7 +531,6 @@ class RegisterView(APIView):
 # ----------------------------
 # Login con JWT
 # ----------------------------
-from .serializers import supabase
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     """Login con username o email + devolver info de usuario y grupos"""
@@ -595,7 +594,7 @@ class EmpresaViewSet(viewsets.ModelViewSet):
         context = super().get_serializer_context()
         context["request"] = self.request
         return context
-def perform_create(self, serializer):
+    def perform_create(self, serializer):
         """
         Cuando un usuario crea una empresa:
         1️⃣ Se guarda la empresa con su usuario como owner (lo hace el serializer).
@@ -715,24 +714,47 @@ class UsuarioViewSet(viewsets.ViewSet):
         return Response(usuario, status=status.HTTP_200_OK)
 
     def partial_update(self, request, pk=None):
-        q = supabase.table("usuarios").select("*").eq("id", pk).execute()
-        data = q.data or []
-        if not data:
-            return Response({"detail": "Usuario no encontrado"}, status=status.HTTP_404_NOT_FOUND)
-        usuario = data[0]
+        data = request.data
+        updates = {}
 
-        if request.user.role != "admin" and usuario.get("email") != request.user.email:
-            return Response({"detail": "No autorizado"}, status=status.HTTP_403_FORBIDDEN)
-            forbidden = set(request.data.keys()) & {"rol", "email", "id"}
-            if forbidden:
-                return Response({"detail": "No autorizado para cambiar esos campos"}, status=status.HTTP_403_FORBIDDEN)
+        # 1. Verificar que el usuario existe
+        user_query = supabase.table("auth_user").select("*").eq("id", pk).execute()
+        if len(user_query.data) == 0:
+            return Response({"error": "Usuario no encontrado"}, status=404)
 
-        update_payload = request.data.copy()
-        try:
-            resp = supabase.table("usuarios").update(update_payload).eq("id", pk).execute()
-        except Exception as e:
-            return Response({"detail": f"Error al actualizar: {e}"}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(resp.data[0] if resp.data else {}, status=status.HTTP_200_OK)
+        # 2. Si viene role → validarlo y actualizarlo
+        if "role" in data:
+            nuevo_rol = data["role"]
+            roles_validos = ["candidato", "admin", "rrhh"]
+
+            if nuevo_rol not in roles_validos:
+                return Response({"error": "Rol inválido"}, status=400)
+
+            updates["role"] = nuevo_rol
+
+        # 3. Si viene id_empresa → validar que exista en core_empresa
+        if "id_empresa" in data:
+            empresa_id = data["id_empresa"]
+
+            empresa_exists = supabase.table("core_empresa").select("id").eq("id", empresa_id).execute()
+
+            if len(empresa_exists.data) == 0:
+                return Response({"error": "La empresa con ese ID no existe."}, status=400)
+
+            updates["id_empresa"] = empresa_id
+
+        # 4. Si no hay nada que actualizar
+        if not updates:
+            return Response({"error": "No se enviaron campos válidos para actualizar."}, status=400)
+
+        # 5. Actualizar
+        actualizado = supabase.table("auth_user").update(updates).eq("id", pk).execute()
+
+        return Response({
+            "message": "Usuario actualizado correctamente",
+            "usuario": actualizado.data[0]
+        }, status=200)
+
 
     @action(detail=False, methods=["post"], url_path="crear_con_rol")
     def crear_con_rol(self, request):
@@ -762,13 +784,41 @@ class UsuarioViewSet(viewsets.ViewSet):
     def actualizar_rol(self, request, pk=None):
         if request.user.role != "admin":
             return Response({"detail": "No autorizado"}, status=status.HTTP_403_FORBIDDEN)
+
         nuevo_rol = request.data.get("rol")
         if not nuevo_rol:
             return Response({"detail": "Debe especificar el nuevo rol"}, status=status.HTTP_400_BAD_REQUEST)
-        group_res = supabase
+
+        # Obtener usuario
+        q = supabase.table("usuarios").select("*").eq("id", pk).execute()
+        if not q.data:
+            return Response({"detail": "Usuario no encontrado"}, status=status.HTTP_404_NOT_FOUND)
+    
+        usuario = q.data[0]
+
+        # Actualizar rol del usuario en la tabla usuarios
+        supabase.table("usuarios").update({"rol": nuevo_rol}).eq("id", pk).execute()
+
+        # Obtener ID del grupo
+        group_res = supabase.table("auth_group").select("id").eq("name", nuevo_rol).execute()
+        if not group_res.data:
+            return Response({"detail": f"El rol '{nuevo_rol}' no existe"}, status=status.HTTP_404_NOT_FOUND)
+
+        group_id = group_res.data[0]["id"]
+
+        # Limpiar grupos actuales
+        supabase.table("auth_user_groups").delete().eq("user_id", pk).execute()
+
+        # Asignar nuevo grupo
+        supabase.table("auth_user_groups").insert({
+            "user_id": pk,
+            "group_id": group_id
+        }).execute()
+
+        return Response({"message": f"Rol actualizado a '{nuevo_rol}'"}, status=status.HTTP_200_OK)
 
     
-    # ----------------------------
+# ----------------------------
 # Reset de contraseña
 # ----------------------------
 class PasswordResetRequestView(APIView):

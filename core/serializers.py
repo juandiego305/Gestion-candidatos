@@ -3,9 +3,9 @@ from django.db import IntegrityError, transaction
 from django.contrib.auth.models import Group
 from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
-from .models import Empresa
 from .supabase_client import supabase
-from .models import Vacante
+from .models import Vacante, Postulacion, Empresa
+
 
 ALLOWED_TYPES = {"image/jpeg", "image/png"}
 
@@ -176,3 +176,10 @@ class UsuarioSerializer(serializers.Serializer):
             raise serializers.ValidationError("Error al registrar los datos del usuario en la base de datos")
 
         return response.data[0]
+
+
+
+class PostulacionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Postulacion
+        fields = "__all__"
