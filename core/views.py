@@ -642,16 +642,42 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
+
+    
+def get_supabase_empresa_id(user):
+    """
+    Obtiene el id_empresa del usuario desde Supabase (tabla auth_user)
+    usando el email.
+    """
+    try:
+        resp = supabase.table("auth_user").select("id_empresa").eq("email", user.email).execute()
+        if resp.data:
+            return resp.data[0].get("id_empresa")
+    except Exception as e:
+        print(f"⚠️ Error obteniendo id_empresa de Supabase: {e}")
+    return None
 # ----------------------------
 # Empresa
 # ----------------------------
 class EmpresaViewSet(viewsets.ModelViewSet):
     serializer_class = EmpresaSerializer
-    permission_classes = [permissions.IsAuthenticated, IsOwner]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        # Solo muestra las empresas del usuario autenticado
-        return Empresa.objects.filter(owner=self.request.user)
+        user = self.request.user
+        # Si el usuario es ADMIN, puede ver todas las empresas
+        if user.is_staff:
+            return Empresa.objects.all()
+
+        # Si el usuario es RRHH, solo puede ver la empresa asociada a él
+        if not user.is_staff:
+            empresa_id = get_supabase_empresa_id(user)  # Obtener la empresa asociada al usuario
+            if empresa_id:
+                return Empresa.objects.filter(id=empresa_id)  # Mostrar solo la empresa asociada
+            else:
+                return Empresa.objects.none()  # Si no tiene empresa asociada, no muestra nada
+
+        return Empresa.objects.none()  # Default: no retorna empresas si no es ADMIN ni RRHH
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
