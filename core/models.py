@@ -160,9 +160,7 @@ class Postulacion(models.Model):
         managed = False                  # 👈 Django NO crea/borra esta tabla
 
     def __str__(self):
-<<<<<<< HEAD
         return f"{self.candidato.username} - {self.vacante.titulo}"
-=======
         return f"{self.candidato.username} - {self.empresa.nombre}"
     
 
@@ -206,4 +204,3 @@ class PerfilUsuario(models.Model):
 
     def __str__(self):
         return f"Perfil de {self.user.username}"
->>>>>>> 271708d (subir cv y datos adicionales del usuario)

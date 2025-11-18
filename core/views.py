@@ -10,20 +10,16 @@ from django.utils.encoding import force_bytes, force_str
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
 from django.conf import settings
-<<<<<<< HEAD
 from .serializers_user import PerfilSerializer, UserSerializer
 from .models import Empresa, Postulacion
-=======
 from .serializers_user import PerfilSerializer, UserSerializer, PerfilUsuarioSerializer
 from .models import Empresa
->>>>>>> 271708d (subir cv y datos adicionales del usuario)
 from .serializers import EmpresaSerializer, UsuarioSerializer, supabase
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
 from .models import Roles
 from supabase import create_client
 from rest_framework import generics, permissions
-<<<<<<< HEAD
 from django.http import JsonResponse
 from rest_framework.decorators import api_view
 from django.contrib.auth.decorators import login_required
@@ -60,11 +56,9 @@ def get_supabase_role(user):
     except Exception as e:
         print("⚠️ Error obteniendo rol de Supabase:", e)
         return None
-=======
 from .models import PerfilUsuario, validate_hoja_vida
 from rest_framework import status, permissions, parsers 
 import time
->>>>>>> 271708d (subir cv y datos adicionales del usuario)
 
 User = get_user_model()
 
@@ -145,7 +139,6 @@ def crear_vacante(request):
         status=201
     )
 
-<<<<<<< HEAD
 
 
 @api_view(['PUT', 'PATCH'])
@@ -479,8 +472,6 @@ def postular_vacante(request, vacante_id):
 # ----------------------------
 # Permisos
 # ----------------------------
-=======
->>>>>>> 271708d (subir cv y datos adicionales del usuario)
 class IsOwner(permissions.BasePermission):
     """Permiso simple: solo el propietario puede modificar/ver este objeto."""
     def has_object_permission(self, request, view, obj):
