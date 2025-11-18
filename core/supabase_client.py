@@ -1,18 +1,36 @@
 # core/supabase_client.py
 import os
-from supabase import create_client, Client
+from supabase import create_client, Client, ClientOptions
 from dotenv import load_dotenv
+from httpx import Client as HTTPXClient
 
-# 🔹 Cargar las variables de entorno desde el archivo .env
+# Cargar variables
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
-# 🔹 Validar que las variables existan
 if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-    raise Exception("❌ Las variables SUPABASE_URL o SUPABASE_SERVICE_KEY no están definidas en el archivo .env")
+    raise Exception("❌ VARIABLES SUPABASE_URL O SUPABASE_SERVICE_KEY NO DEFINIDAS.")
 
-# 🔹 Crear la conexión con Supabase
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+def get_supabase():
+    # Forzar HTTP/1.1 para evitar fallos de httpx
+    http_client = HTTPXClient(http2=False)
+
+    # Crear opciones correctas (NO un dict)
+    options = ClientOptions(
+        postgrest_client_timeout=30,
+        storage_client_timeout=30,
+        httpx_client=http_client 
+    )
+
+    return create_client(
+        supabase_url=SUPABASE_URL,
+        supabase_key=SUPABASE_SERVICE_KEY,
+        options=options
+    )
+
+# Crear cliente global
+supabase: Client = get_supabase()
+
 print("✅ Conectado exitosamente a Supabase")

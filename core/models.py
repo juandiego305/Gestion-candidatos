@@ -3,6 +3,9 @@ from django.conf import settings
 from django.db import models
 # from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError
+import os
 
 class Roles:
     ADMIN = "admin"
@@ -157,4 +160,50 @@ class Postulacion(models.Model):
         managed = False                  # 👈 Django NO crea/borra esta tabla
 
     def __str__(self):
+<<<<<<< HEAD
         return f"{self.candidato.username} - {self.vacante.titulo}"
+=======
+        return f"{self.candidato.username} - {self.empresa.nombre}"
+    
+
+# ────────────────────────────────────────────────
+# PERFIL USUARIO - DATOS ADICIONALES
+# ────────────────────────────────────────────────
+
+def upload_foto(instance, filename):
+    return f"perfiles/{instance.user.id}/foto/{filename}"
+
+def upload_hoja_vida(instance, filename):
+    return f"perfiles/{instance.user.id}/hoja_vida/{filename}"
+
+def validate_hoja_vida(file):
+    """Validar que el archivo sea .pdf o .docx y no exceda 10MB"""
+    # Validar extensión
+    ext = os.path.splitext(file.name)[1].lower()
+    if ext not in ['.pdf', '.docx']:
+        raise ValidationError('Solo se permiten archivos con extensión .pdf o .docx')
+    
+    # Validar tamaño (10MB = 10485760 bytes)
+    if file.size > 10485760:
+        raise ValidationError('El archivo no puede exceder 10MB')
+
+
+# ────────────────────────────────────────────────
+# PERFIL USUARIO - DATOS ADICIONALES
+    
+class PerfilUsuario(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    telefono = models.CharField(max_length=20, blank=True, null=True)
+    documento = models.CharField(max_length=50, blank=True, null=True)
+    ubicacion = models.CharField(max_length=150, null=True, blank=True)
+    descripcion = models.TextField(blank=True, null=True)
+    creado = models.DateTimeField(auto_now_add=True)
+    actualizado = models.DateTimeField(auto_now=True)
+    
+
+    foto_perfil = models.CharField(max_length=500, blank=True, null=True)
+    hoja_vida = models.CharField(max_length=500, blank=True, null=True)
+
+    def __str__(self):
+        return f"Perfil de {self.user.username}"
+>>>>>>> 271708d (subir cv y datos adicionales del usuario)

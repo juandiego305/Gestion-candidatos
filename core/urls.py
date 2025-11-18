@@ -19,6 +19,7 @@ urlpatterns = [
     path('api/auth/password-reset-confirm/', views.PasswordResetConfirmView.as_view(), name='api_password_reset_confirm'),
     path('api/token/', views.CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path("api/perfil/", views.PerfilView.as_view(), name="perfil"),
+<<<<<<< HEAD
     path('vacantes/crear/', views.crear_vacante, name='crear_vacante'),
     path('vacantes/<int:vacante_id>/editar/', views.actualizar_vacante, name='actualizar_vacante'),
     path('vacantes/<int:vacante_id>/eliminar/', views.eliminar_vacante, name='eliminar_vacante'),
@@ -26,5 +27,8 @@ urlpatterns = [
     path('vacantes/', views.listar_vacantes, name='listar_vacantes'),
     path("vacantes/<int:vacante_id>/postular/", postular_vacante, name="postular_vacante"),
     path('empresas/', listar_empresas, name='listar_empresas'),
+=======
+    path("api/perfil_adicional/", views.PerfilUsuarioView.as_view()),
+>>>>>>> 271708d (subir cv y datos adicionales del usuario)
 
 ]
