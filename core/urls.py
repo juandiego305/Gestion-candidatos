@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import EmpresaViewSet, UserViewSet, UsuarioViewSet, postular_vacante 
+from .views import EmpresaViewSet, UserViewSet, UsuarioViewSet, postular_vacante, listar_empresas
 
 
 router = DefaultRouter()
@@ -24,6 +24,7 @@ urlpatterns = [
     path('vacantes/<int:vacante_id>/eliminar/', views.eliminar_vacante, name='eliminar_vacante'),
     path('vacantes/<int:vacante_id>/publicar/', views.publicar_vacante, name='publicar_vacante'),
     path('vacantes/', views.listar_vacantes, name='listar_vacantes'),
-    path("vacantes/<int:vacante_id>/postular/", postular_vacante, name="postular_vacante")
+    path("vacantes/<int:vacante_id>/postular/", postular_vacante, name="postular_vacante"),
+    path('empresas/', listar_empresas, name='listar_empresas'),
 
 ]

@@ -650,6 +650,26 @@ def perform_create(self, serializer):
         except Exception as e:
             print(f"⚠️ Error actualizando rol en Supabase: {e}")
             return empresa
+@api_view(['GET'])
+@permission_classes([permissions.AllowAny])  # Permite acceso a cualquier usuario
+def listar_empresas(request):
+    """Lista todas las empresas sin restricciones de rol."""
+
+    empresas = Empresa.objects.all()
+
+    # Serializamos las empresas
+    data = []
+    for e in empresas:
+        data.append({
+            "id": e.id,
+            "nombre": e.nombre,
+            "nit": e.nit,
+            "direccion": e.direccion,
+            "logo_url": e.logo_url,
+            "descripcion": e.descripcion,
+        })
+
+    return JsonResponse(data, safe=False, status=200)
 
 # ----------------------------
 # Usuarios
