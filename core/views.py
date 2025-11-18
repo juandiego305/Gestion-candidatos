@@ -12,7 +12,9 @@ from django.core.mail import send_mail
 from django.conf import settings
 from .serializers_user import PerfilSerializer, UserSerializer
 from .models import Empresa, Postulacion
-from .serializers import EmpresaSerializer, UsuarioSerializer
+from .serializers_user import PerfilSerializer, UserSerializer, PerfilUsuarioSerializer
+from .models import Empresa
+from .serializers import EmpresaSerializer, UsuarioSerializer, supabase
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
 from .models import Roles
@@ -54,6 +56,9 @@ def get_supabase_role(user):
     except Exception as e:
         print("⚠️ Error obteniendo rol de Supabase:", e)
         return None
+from .models import PerfilUsuario, validate_hoja_vida
+from rest_framework import status, permissions, parsers 
+import time
 
 User = get_user_model()
 
@@ -468,10 +473,47 @@ def postular_vacante(request, vacante_id):
 # Permisos
 # ----------------------------
 class IsOwner(permissions.BasePermission):
-    """Permite acceso solo al propietario de la empresa."""
+    """Permiso simple: solo el propietario puede modificar/ver este objeto."""
     def has_object_permission(self, request, view, obj):
-        return obj.owner_id == request.user.id
+        # Soporta objetos con atributo 'owner' o 'user'
+        owner = getattr(obj, "owner", None) or getattr(obj, "user", None)
+        return bool(owner and owner == request.user)
 
+# Inicializar cliente Supabase con timeout extendido (60s)
+import httpx
+_timeout = httpx.Timeout(60.0, connect=60.0, read=60.0, write=60.0)
+_http_client = httpx.Client(timeout=_timeout, verify=True)
+
+supabase = create_client(
+    settings.SUPABASE_URL,
+    settings.SUPABASE_SERVICE_KEY,
+)
+
+def upload_to_supabase_with_retry(bucket_path, file_bytes, file_name, content_type,
+                                  max_retries=3, initial_backoff=1.0):
+    """Sube archivos a Supabase con reintentos exponenciales. Recibe bytes directamente."""
+    import time as _time
+    last_exc = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"📤 Intento {attempt}/{max_retries}: subiendo {file_name} ({len(file_bytes)} bytes) a {bucket_path}")
+            resp = supabase.storage.from_("perfiles").upload(
+                bucket_path,
+                file_bytes,
+                {"content-type": content_type}
+            )
+            print(f"✅ Archivo subido exitosamente: {bucket_path}")
+            return resp
+        except Exception as e:
+            last_exc = e
+            print(f"⚠️ Error en intento {attempt}: {type(e).__name__}: {e}")
+            if attempt == max_retries:
+                print(f"❌ Superados {max_retries} intentos para {file_name}")
+                raise
+            backoff = initial_backoff * (2 ** (attempt - 1))
+            print(f"⏳ Esperando {backoff}s antes del siguiente intento...")
+            _time.sleep(backoff)
+    raise last_exc
 
 class IsAdmin(permissions.BasePermission):
     """Solo administradores pueden gestionar usuarios"""
@@ -503,13 +545,34 @@ def home(request):
     return HttpResponse("¡Hola, Django está funcionando correctamente!")
 
 
+# Test endpoint para verificar conexión a Supabase
+class TestSupabaseView(APIView):
+    permission_classes = [permissions.AllowAny]
+    
+    def get(self, request):
+        try:
+            # Intentar listar buckets
+            buckets = supabase.storage.list_buckets()
+            bucket_names = [b.name for b in buckets]
+            
+            return Response({
+                "status": "✅ Conectado a Supabase",
+                "buckets": bucket_names,
+                "perfiles_bucket_exists": "perfiles" in bucket_names
+            })
+        except Exception as e:
+            return Response({
+                "status": "❌ Error conectando a Supabase",
+                "error": str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 # ----------------------------
 # Registro de usuarios
 # ----------------------------
 class RegisterView(APIView):
     """Registro público de usuarios (rol por defecto: candidato)"""
     permission_classes = [permissions.AllowAny]
-
     def post(self, request):
         data = request.data.copy()
         data.pop("role", None)
@@ -520,7 +583,7 @@ class RegisterView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            user = serializer.create(data)
+            user = serializer.create(serializer.validated_data)
         except Exception as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -867,13 +930,12 @@ class PasswordResetConfirmView(APIView):
         user.save()
         return Response({"detail": "Contraseña restablecida correctamente"}, status=status.HTTP_200_OK)
     
-
 class PerfilView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         user = request.user
-        # Buscar usuario en Supabase usando el email o el ID
+        
         response = supabase.table("auth_user").select("*").eq("email", user.email).execute()
 
         if not response.data:
@@ -881,7 +943,6 @@ class PerfilView(APIView):
 
         perfil = response.data[0]
 
-         # Filtrar solo los campos que deseas mostrar
         datos_filtrados = {
             "id": perfil.get("id"),
             "username": perfil.get("username"),
@@ -894,3 +955,203 @@ class PerfilView(APIView):
         }
 
         return Response(datos_filtrados)
+
+    def put(self, request):
+        user = request.user
+        data = request.data.copy()
+
+        serializer = PerfilSerializer(request.user, data=data, partial=True)
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=200)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    # DATOS ADICIONALES DEL PERFIL DE USUARIO
+
+# DATOS ADICIONALES DEL PERFIL DE USUARIO
+
+class PerfilUsuarioView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [parsers.MultiPartParser, parsers.FormParser, parsers.JSONParser]
+
+    # ========================================
+    #                  GET
+    # ========================================
+    def get(self, request):
+        perfil, _ = PerfilUsuario.objects.get_or_create(user=request.user)
+
+        serializer = PerfilUsuarioSerializer(perfil)
+        data = serializer.data
+        data.setdefault("telefono", None)
+        data.setdefault("documento", None)
+
+        return Response(data)
+
+    # ========================================
+    #                  POST
+    # ========================================
+    def post(self, request):
+        perfil, _ = PerfilUsuario.objects.get_or_create(user=request.user)
+
+        try:
+            # ======================
+            # SUBIR FOTO DE PERFIL
+            # ======================
+            foto = request.FILES.get("foto_perfil")
+            if foto:
+                path_new = f"{request.user.id}/foto/{int(time.time())}_{foto.name}"
+                foto_bytes = foto.read()
+
+                supabase.storage.from_("perfiles").upload(path_new, foto_bytes)
+
+                public_url_resp = supabase.storage.from_("perfiles").get_public_url(path_new)
+                public_url = (
+                    public_url_resp.get("publicURL")
+                    if isinstance(public_url_resp, dict)
+                    else public_url_resp
+                )
+
+                # Eliminar archivo viejo si existe
+                old_photo = perfil.foto_perfil
+                if old_photo and isinstance(old_photo, str) and old_photo.startswith(
+                    f"{settings.SUPABASE_URL}/storage/v1/object/public/perfiles/"
+                ):
+                    old_path = old_photo.replace(
+                        f"{settings.SUPABASE_URL}/storage/v1/object/public/perfiles/",
+                        ""
+                    )
+                    try:
+                        supabase.storage.from_("perfiles").remove([old_path])
+                    except:
+                        pass
+
+                perfil.foto_perfil = public_url
+                perfil.save(update_fields=["foto_perfil"])
+
+            # ======================
+            # SUBIR HOJA DE VIDA
+            # ======================
+            hoja = request.FILES.get("hoja_vida")
+            if hoja:
+                path = f"{request.user.id}/hoja_vida/{int(time.time())}_{hoja.name}"
+                hoja_bytes = hoja.read()
+
+                supabase.storage.from_("perfiles").upload(path, hoja_bytes)
+
+                public_url_resp = supabase.storage.from_("perfiles").get_public_url(path)
+                public_url = (
+                    public_url_resp.get("publicURL")
+                    if isinstance(public_url_resp, dict)
+                    else public_url_resp
+                )
+
+                # Eliminar anterior
+                old_cv = perfil.hoja_vida
+                if old_cv and isinstance(old_cv, str) and old_cv.startswith(
+                    f"{settings.SUPABASE_URL}/storage/v1/object/public/perfiles/"
+                ):
+                    old_path = old_cv.replace(
+                        f"{settings.SUPABASE_URL}/storage/v1/object/public/perfiles/",
+                        ""
+                    )
+                    try:
+                        supabase.storage.from_("perfiles").remove([old_path])
+                    except:
+                        pass
+
+                perfil.hoja_vida = public_url
+                perfil.save(update_fields=["hoja_vida"])
+
+        except Exception as e:
+            print("Error procesando archivos:", e)
+
+        # =======================================
+        # LIMPIAR PARA SERIALIZER
+        # =======================================
+        data = request.data.copy()
+        data.pop("foto_perfil", None)
+        data.pop("hoja_vida", None)
+
+        serializer = PerfilUsuarioSerializer(perfil, data=data, partial=True)
+
+        if serializer.is_valid():
+            serializer.save()
+            data = serializer.data
+            data.setdefault("telefono", None)
+            data.setdefault("documento", None)
+            return Response(data, status=status.HTTP_201_CREATED)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+     # ========================================
+    #                  PATCH
+    # ========================================
+    def patch(self, request):
+        perfil, _ = PerfilUsuario.objects.get_or_create(user=request.user)
+
+        # ==============================
+        #       PROCESAR FOTO
+        # ==============================
+        foto = request.FILES.get("foto_perfil")
+        if foto:
+            ext = foto.name.split(".")[-1]
+            file_key = f"{request.user.id}/foto/{int(time.time())}.{ext}"
+
+            # Eliminar foto anterior
+            old_photo = perfil.foto_perfil
+            if old_photo and isinstance(old_photo, str) and "perfiles/" in old_photo:
+                old_path = old_photo.split("/public/perfiles/")[-1]
+                try:
+                    supabase.storage.from_("perfiles").remove([old_path])
+                except:
+                    pass
+
+            supabase.storage.from_("perfiles").upload(file_key, foto.read())
+
+            foto_url_resp = supabase.storage.from_("perfiles").get_public_url(file_key)
+            foto_url = foto_url_resp.get("publicURL") if isinstance(foto_url_resp, dict) else foto_url_resp
+
+            perfil.foto_perfil = foto_url
+            perfil.save(update_fields=["foto_perfil"])
+
+        # ==============================
+        #     PROCESAR HOJA DE VIDA
+        # ==============================
+        hoja = request.FILES.get("hoja_vida")
+        if hoja:
+            ext = hoja.name.split(".")[-1]
+            file_key = f"{request.user.id}/hoja_vida/{int(time.time())}.{ext}"
+
+            # Eliminar CV anterior
+            old_cv = perfil.hoja_vida
+            if old_cv and isinstance(old_cv, str) and "perfiles/" in old_cv:
+                old_path = old_cv.split("/public/perfiles/")[-1]
+                try:
+                    supabase.storage.from_("perfiles").remove([old_path])
+                except:
+                    pass
+
+            supabase.storage.from_("perfiles").upload(file_key, hoja.read())
+
+            cv_url_resp = supabase.storage.from_("perfiles").get_public_url(file_key)
+            cv_url = cv_url_resp.get("publicURL") if isinstance(cv_url_resp, dict) else cv_url_resp
+
+            perfil.hoja_vida = cv_url
+            perfil.save(update_fields=["hoja_vida"])
+
+        # ==============================
+        #  ACTUALIZAR CAMPOS NORMALES
+        # ==============================
+        data = request.data.copy()
+        data.pop("foto_perfil", None)
+        data.pop("hoja_vida", None)
+
+        serializer = PerfilUsuarioSerializer(perfil, data=data, partial=True)
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=400)

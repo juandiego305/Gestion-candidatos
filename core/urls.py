@@ -26,6 +26,6 @@ urlpatterns = [
     path('vacantes/', views.listar_vacantes, name='listar_vacantes'),
     path("vacantes/<int:vacante_id>/postular/", postular_vacante, name="postular_vacante"),
     path('empresas/', listar_empresas, name='listar_empresas'),
-    
+    path("api/perfil_adicional/", views.PerfilUsuarioView.as_view()),
 
 ]

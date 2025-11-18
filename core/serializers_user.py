@@ -4,6 +4,8 @@ from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 from django.contrib.auth import get_user_model
 from core.models import Roles  # 👈 importa desde models.py
+from .models import PerfilUsuario
+from core.supabase_client import supabase
 
 User = get_user_model()
 
@@ -64,7 +66,23 @@ class PerfilSerializer(serializers.ModelSerializer):
             "email",
             "first_name",
             "last_name",
-            "role",
             "date_joined",
             "last_login",
         ]
+        read_only_fields = ["email"]  
+
+
+
+class PerfilUsuarioSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PerfilUsuario
+        fields = [
+            "id",
+            "foto_perfil",     # ahora guardará la URL real
+            "hoja_vida",
+            "telefono",
+            "documento",
+            "descripcion",
+            "ubicacion",
+        ]
+        read_only_fields = ["id"]
