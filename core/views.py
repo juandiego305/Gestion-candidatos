@@ -879,6 +879,33 @@ class UsuarioViewSet(viewsets.ViewSet):
         }).execute()
 
         return Response({"message": f"Rol actualizado a '{nuevo_rol}'"}, status=status.HTTP_200_OK)
+    
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def listar_usuarios(request):
+    """Lista todos los usuarios SOLO si quien lo solicita es admin."""
+
+    role = get_supabase_role(request.user)
+
+    if role != "admin":
+        return JsonResponse(
+            {"error": "No tienes permisos para listar usuarios."},
+            status=403
+        )
+
+    usuarios = User.objects.all()
+
+    data = []
+    for u in usuarios:
+        data.append({
+            "id": u.id,
+            "username": u.username,
+            "email": u.email,
+            "first_name": u.first_name,
+            "last_name": u.last_name,
+        })
+
+    return JsonResponse(data, safe=False, status=200)
 
     
 # ----------------------------
