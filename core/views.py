@@ -32,6 +32,7 @@ from django.shortcuts import get_object_or_404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from .models import Vacante, Postulacion, Empresa
+from django.views.decorators.csrf import csrf_exempt
 
 
 
@@ -392,14 +393,15 @@ def listar_vacantes(request):
 # ----------------------------
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@csrf_exempt  # Desactiva la protección CSRF para esta vista
+@permission_classes([IsAuthenticated])  # Solo usuarios autenticados pueden postularse
 def postular_vacante(request, vacante_id):
     """
     Permite a un candidato postularse a una vacante.
 
     Escenarios cubiertos:
     - Postulación exitosa
-    - Sin CV cargado
+    - Sin CV cargado (opcional)
     - Postulación duplicada
     - Notificación de confirmación (simulada en la respuesta)
     """
@@ -429,15 +431,7 @@ def postular_vacante(request, vacante_id):
             status=400
         )
 
-    # 4) Validar que haya CV cargado (Escenario 2)
-    cv_url = request.data.get("cv_url")
-    if not cv_url:
-        return JsonResponse(
-            {"error": "Debe cargar un CV antes de postularse."},
-            status=400
-        )
-
-    # 5) Validar postulación duplicada (Escenario 3)
+    # 4) Validar postulación duplicada (Escenario 3)
     ya_postulado = Postulacion.objects.filter(
         candidato=request.user,
         vacante=vacante
@@ -449,18 +443,27 @@ def postular_vacante(request, vacante_id):
             status=400
         )
 
+    # 5) Si el CV es proporcionado, validar el archivo (Escenario 2)
+    cv_url = request.data.get("cv_url", None)
+
+    # Si no hay CV, lo dejamos como None (opcional)
+    if cv_url:
+        # Puedes agregar validaciones adicionales aquí si lo deseas
+        pass  # Si proporcionan el CV, aquí podrías validar el archivo (como tamaño y tipo)
+
     # 6) Crear la postulación (Escenario 1)
     postulacion = Postulacion.objects.create(
         candidato=request.user,
         empresa=vacante.id_empresa,
         vacante=vacante,
-        cv_url=cv_url,
-        estado="Postulado"
+        cv_url=cv_url,  # Puede ser None si no se proporciona
+        estado="Postulado",
+        fecha_postulacion=timezone.now()
     )
 
     # 7) Notificar (Escenario 4)
-    # Aquí podrías enviar correo al reclutador, registrar en Supabase, etc.
-    # Por ahora devolvemos un mensaje de confirmación:
+    # Aquí puedes integrar la notificación real, como un correo al reclutador.
+    # Por ahora, devolvemos un mensaje de confirmación:
     return JsonResponse(
         {
             "message": "Postulación registrada correctamente. El reclutador ha sido notificado.",

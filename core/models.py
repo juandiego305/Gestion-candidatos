@@ -133,34 +133,35 @@ class Postulacion(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="postulaciones",
-        db_column="candidato_id",   # columna real en la BD
+        db_column="id_candidato",   # columna real en la BD
     )
 
     vacante = models.ForeignKey(
         Vacante,
         on_delete=models.CASCADE,
         related_name="postulaciones",
-        db_column="id_vacante",     # 👈 coincide con el CREATE TABLE
+        db_column="id_vacante",     # coincide con el CREATE TABLE
     )
 
     empresa = models.ForeignKey(
         Empresa,
         on_delete=models.CASCADE,
         related_name="postulaciones",
-        db_column="empresa_id",
+        db_column="id_empresa",
     )
 
+    # CV como URL opcional
     cv_url = models.URLField(null=True, blank=True)
+
     estado = models.CharField(max_length=50, choices=ESTADOS, default="Postulado")
     fecha_postulacion = models.DateTimeField()
 
     class Meta:
-        db_table = "core_postulaciones"  # 👈 nombre exacto de la tabla
-        managed = False                  # 👈 Django NO crea/borra esta tabla
+        db_table = "core_postulaciones"  # Nombre de la tabla
+        managed = False                  # No gestionada por Django (la tabla ya existe en la BD)
 
     def __str__(self):
         return f"{self.candidato.username} - {self.vacante.titulo}"
-        return f"{self.candidato.username} - {self.empresa.nombre}"
     
 
 # ────────────────────────────────────────────────
