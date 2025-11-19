@@ -10,21 +10,28 @@ from django.utils.encoding import force_bytes, force_str
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
 from django.conf import settings
+
+from core.supabase_client import SUPABASE_URL, get_supabase_client
+from core.supabase_client import SUPABASE_SERVICE_KEY
+
 from .serializers_user import PerfilSerializer, UserSerializer
 from .models import Empresa, Postulacion
+
 from .serializers_user import PerfilSerializer, UserSerializer, PerfilUsuarioSerializer
 from .models import Empresa
+
 from .serializers import EmpresaSerializer, UsuarioSerializer, supabase
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
 from .models import Roles
 from supabase import create_client
 from rest_framework import generics, permissions
+
 from django.http import JsonResponse
 from rest_framework.decorators import api_view
 from django.contrib.auth.decorators import login_required
 from django.utils import timezone
-from .serializers import VacanteSerializer, PostulacionSerializer
+from .serializers import VacanteSerializer
 from datetime import datetime
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -32,7 +39,6 @@ from django.shortcuts import get_object_or_404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from .models import Vacante, Postulacion, Empresa
-from django.views.decorators.csrf import csrf_exempt
 
 
 
@@ -57,9 +63,11 @@ def get_supabase_role(user):
     except Exception as e:
         print("⚠️ Error obteniendo rol de Supabase:", e)
         return None
+
 from .models import PerfilUsuario, validate_hoja_vida
 from rest_framework import status, permissions, parsers 
 import time
+
 
 User = get_user_model()
 
@@ -391,90 +399,84 @@ def listar_vacantes(request):
 # ----------------------------
 # Postulacion
 # ----------------------------
-
 @api_view(['POST'])
-@csrf_exempt  # Desactiva la protección CSRF para esta vista
-@permission_classes([IsAuthenticated])  # Solo usuarios autenticados pueden postularse
+@permission_classes([IsAuthenticated])
 def postular_vacante(request, vacante_id):
-    """
-    Permite a un candidato postularse a una vacante.
 
-    Escenarios cubiertos:
-    - Postulación exitosa
-    - Sin CV cargado (opcional)
-    - Postulación duplicada
-    - Notificación de confirmación (simulada en la respuesta)
-    """
-
-    # 1) Verificar rol: solo candidatos pueden postularse
+    # 1) Validar rol desde Supabase
     role = get_supabase_role(request.user)
+    print("🔥 Rol desde Supabase:", role)
+
     if role != "candidato":
-        return JsonResponse(
-            {"error": "Solo los candidatos pueden postularse a vacantes."},
-            status=403
-        )
+        return JsonResponse({"error": "Solo los candidatos pueden postularse."}, status=403)
 
     # 2) Obtener la vacante
     vacante = get_object_or_404(Vacante, id=vacante_id)
 
-    # 3) Validar que la vacante esté activa (Publicada y no vencida)
+    # 3) Validar estado activo y fecha
     ahora = timezone.now()
     fecha_exp = vacante.fecha_expiracion
 
-    # Manejar posibles datetime naive
+    # Asegurar que la fecha sea aware
     if timezone.is_naive(fecha_exp):
-        fecha_exp = timezone.make_aware(fecha_exp, timezone.get_current_timezone())
+        fecha_exp = timezone.make_aware(fecha_exp)
 
     if vacante.estado != "Publicado" or fecha_exp < ahora:
-        return JsonResponse(
-            {"error": "La vacante no está activa para postulaciones."},
-            status=400
-        )
+        return JsonResponse({"error": "La vacante no está activa."}, status=400)
 
-    # 4) Validar postulación duplicada (Escenario 3)
-    ya_postulado = Postulacion.objects.filter(
-        candidato=request.user,
-        vacante=vacante
-    ).exists()
+    # 4) Obtener archivo enviado
+    archivo_cv = request.FILES.get("cv")
+    if not archivo_cv:
+        return Response({"error": "Debe adjuntar un archivo 'cv'."}, status=400)
 
-    if ya_postulado:
-        return JsonResponse(
-            {"error": "Ya se encuentra postulado a esta vacante."},
-            status=400
-        )
+    # Leer bytes del archivo
+    contenido = archivo_cv.read()
 
-    # 5) Si el CV es proporcionado, validar el archivo (Escenario 2)
-    cv_url = request.data.get("cv_url", None)
+    # 5) Construir ruta única en Supabase Storage
+    ruta_supabase = f"vacantes/{vacante_id}/cv_{request.user.id}.pdf"
 
-    # Si no hay CV, lo dejamos como None (opcional)
-    if cv_url:
-        # Puedes agregar validaciones adicionales aquí si lo deseas
-        pass  # Si proporcionan el CV, aquí podrías validar el archivo (como tamaño y tipo)
+    # 6) Subir archivo a Supabase correctamente
+    res = supabase.storage.from_("perfiles").upload(
+        ruta_supabase,
+        contenido,
+        file_options={"content-type": archivo_cv.content_type}
+    )
 
-    # 6) Crear la postulación (Escenario 1)
+    # Validar error del upload
+    if res is None or getattr(res, "error", None):
+        print("❌ Error subiendo a Supabase:", getattr(res, "error", None))
+        return JsonResponse({"error": "Error subiendo archivo a Supabase"}, status=500)
+
+    # 7) Obtener URL pública
+    url_final = supabase.storage.from_("perfiles").get_public_url(ruta_supabase)
+
+    # 8) Validar si ya está postulado
+    if Postulacion.objects.filter(candidato=request.user, vacante=vacante).exists():
+        return JsonResponse({"error": "Ya se encuentra postulado a esta vacante."}, status=400)
+
+    # 9) Crear postulación
     postulacion = Postulacion.objects.create(
         candidato=request.user,
-        empresa=vacante.id_empresa,
         vacante=vacante,
-        cv_url=cv_url,  # Puede ser None si no se proporciona
+        empresa=vacante.id_empresa,
+        cv_url=url_final,
         estado="Postulado",
         fecha_postulacion=timezone.now()
     )
 
-    # 7) Notificar (Escenario 4)
-    # Aquí puedes integrar la notificación real, como un correo al reclutador.
-    # Por ahora, devolvemos un mensaje de confirmación:
-    return JsonResponse(
-        {
-            "message": "Postulación registrada correctamente. El reclutador ha sido notificado.",
-            "postulacion_id": postulacion.id,
-            "vacante_id": vacante.id
-        },
-        status=201
-    )
+    # 10) Respuesta final
+    return JsonResponse({
+        "message": "Postulación registrada correctamente.",
+        "postulacion_id": postulacion.id,
+        "vacante_id": vacante.id,
+        "cv_url": url_final
+    }, status=201)
+
+
 # ----------------------------
 # Permisos
 # ----------------------------
+
 class IsOwner(permissions.BasePermission):
     """Permiso simple: solo el propietario puede modificar/ver este objeto."""
     def has_object_permission(self, request, view, obj):
@@ -597,6 +599,7 @@ class RegisterView(APIView):
 # ----------------------------
 # Login con JWT
 # ----------------------------
+from .serializers import supabase
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     """Login con username o email + devolver info de usuario y grupos"""
@@ -645,48 +648,22 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
-
-    
-def get_supabase_empresa_id(user):
-    """
-    Obtiene el id_empresa del usuario desde Supabase (tabla auth_user)
-    usando el email.
-    """
-    try:
-        resp = supabase.table("auth_user").select("id_empresa").eq("email", user.email).execute()
-        if resp.data:
-            return resp.data[0].get("id_empresa")
-    except Exception as e:
-        print(f"⚠️ Error obteniendo id_empresa de Supabase: {e}")
-    return None
 # ----------------------------
 # Empresa
 # ----------------------------
 class EmpresaViewSet(viewsets.ModelViewSet):
     serializer_class = EmpresaSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsOwner]
 
     def get_queryset(self):
-        user = self.request.user
-        # Si el usuario es ADMIN, puede ver todas las empresas
-        if user.is_staff:
-            return Empresa.objects.all()
-
-        # Si el usuario es RRHH, solo puede ver la empresa asociada a él
-        if not user.is_staff:
-            empresa_id = get_supabase_empresa_id(user)  # Obtener la empresa asociada al usuario
-            if empresa_id:
-                return Empresa.objects.filter(id=empresa_id)  # Mostrar solo la empresa asociada
-            else:
-                return Empresa.objects.none()  # Si no tiene empresa asociada, no muestra nada
-
-        return Empresa.objects.none()  # Default: no retorna empresas si no es ADMIN ni RRHH
+        # Solo muestra las empresas del usuario autenticado
+        return Empresa.objects.filter(owner=self.request.user)
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
         context["request"] = self.request
         return context
-    def perform_create(self, serializer):
+def perform_create(self, serializer):
         """
         Cuando un usuario crea una empresa:
         1️⃣ Se guarda la empresa con su usuario como owner (lo hace el serializer).
@@ -806,47 +783,24 @@ class UsuarioViewSet(viewsets.ViewSet):
         return Response(usuario, status=status.HTTP_200_OK)
 
     def partial_update(self, request, pk=None):
-        data = request.data
-        updates = {}
+        q = supabase.table("usuarios").select("*").eq("id", pk).execute()
+        data = q.data or []
+        if not data:
+            return Response({"detail": "Usuario no encontrado"}, status=status.HTTP_404_NOT_FOUND)
+        usuario = data[0]
 
-        # 1. Verificar que el usuario existe
-        user_query = supabase.table("auth_user").select("*").eq("id", pk).execute()
-        if len(user_query.data) == 0:
-            return Response({"error": "Usuario no encontrado"}, status=404)
+        if request.user.role != "admin" and usuario.get("email") != request.user.email:
+            return Response({"detail": "No autorizado"}, status=status.HTTP_403_FORBIDDEN)
+            forbidden = set(request.data.keys()) & {"rol", "email", "id"}
+            if forbidden:
+                return Response({"detail": "No autorizado para cambiar esos campos"}, status=status.HTTP_403_FORBIDDEN)
 
-        # 2. Si viene role → validarlo y actualizarlo
-        if "role" in data:
-            nuevo_rol = data["role"]
-            roles_validos = ["candidato", "admin", "rrhh"]
-
-            if nuevo_rol not in roles_validos:
-                return Response({"error": "Rol inválido"}, status=400)
-
-            updates["role"] = nuevo_rol
-
-        # 3. Si viene id_empresa → validar que exista en core_empresa
-        if "id_empresa" in data:
-            empresa_id = data["id_empresa"]
-
-            empresa_exists = supabase.table("core_empresa").select("id").eq("id", empresa_id).execute()
-
-            if len(empresa_exists.data) == 0:
-                return Response({"error": "La empresa con ese ID no existe."}, status=400)
-
-            updates["id_empresa"] = empresa_id
-
-        # 4. Si no hay nada que actualizar
-        if not updates:
-            return Response({"error": "No se enviaron campos válidos para actualizar."}, status=400)
-
-        # 5. Actualizar
-        actualizado = supabase.table("auth_user").update(updates).eq("id", pk).execute()
-
-        return Response({
-            "message": "Usuario actualizado correctamente",
-            "usuario": actualizado.data[0]
-        }, status=200)
-
+        update_payload = request.data.copy()
+        try:
+            resp = supabase.table("usuarios").update(update_payload).eq("id", pk).execute()
+        except Exception as e:
+            return Response({"detail": f"Error al actualizar: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(resp.data[0] if resp.data else {}, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["post"], url_path="crear_con_rol")
     def crear_con_rol(self, request):
@@ -876,68 +830,13 @@ class UsuarioViewSet(viewsets.ViewSet):
     def actualizar_rol(self, request, pk=None):
         if request.user.role != "admin":
             return Response({"detail": "No autorizado"}, status=status.HTTP_403_FORBIDDEN)
-
         nuevo_rol = request.data.get("rol")
         if not nuevo_rol:
             return Response({"detail": "Debe especificar el nuevo rol"}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Obtener usuario
-        q = supabase.table("usuarios").select("*").eq("id", pk).execute()
-        if not q.data:
-            return Response({"detail": "Usuario no encontrado"}, status=status.HTTP_404_NOT_FOUND)
-    
-        usuario = q.data[0]
-
-        # Actualizar rol del usuario en la tabla usuarios
-        supabase.table("usuarios").update({"rol": nuevo_rol}).eq("id", pk).execute()
-
-        # Obtener ID del grupo
-        group_res = supabase.table("auth_group").select("id").eq("name", nuevo_rol).execute()
-        if not group_res.data:
-            return Response({"detail": f"El rol '{nuevo_rol}' no existe"}, status=status.HTTP_404_NOT_FOUND)
-
-        group_id = group_res.data[0]["id"]
-
-        # Limpiar grupos actuales
-        supabase.table("auth_user_groups").delete().eq("user_id", pk).execute()
-
-        # Asignar nuevo grupo
-        supabase.table("auth_user_groups").insert({
-            "user_id": pk,
-            "group_id": group_id
-        }).execute()
-
-        return Response({"message": f"Rol actualizado a '{nuevo_rol}'"}, status=status.HTTP_200_OK)
-    
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def listar_usuarios(request):
-    """Lista todos los usuarios SOLO si quien lo solicita es admin."""
-
-    role = get_supabase_role(request.user)
-
-    if role != "admin":
-        return JsonResponse(
-            {"error": "No tienes permisos para listar usuarios."},
-            status=403
-        )
-
-    usuarios = User.objects.all()
-
-    data = []
-    for u in usuarios:
-        data.append({
-            "id": u.id,
-            "username": u.username,
-            "email": u.email,
-            "first_name": u.first_name,
-            "last_name": u.last_name,
-        })
-
-    return JsonResponse(data, safe=False, status=200)
+        group_res = supabase
 
     
-# ----------------------------
+    # ----------------------------
 # Reset de contraseña
 # ----------------------------
 class PasswordResetRequestView(APIView):
