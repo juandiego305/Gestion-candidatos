@@ -34,6 +34,4 @@ urlpatterns = [
     path('api/asignar-empleado/', views.AsignarEmpleadoView.as_view(), name='asignar-empleado'),
     path("api/empresa/<int:empresa_id>/trabajadores/", views.listar_trabajadores, name="listar_trabajadores"),
 
-
-
 ]

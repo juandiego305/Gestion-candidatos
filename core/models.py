@@ -3,6 +3,9 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 import os
+from django.contrib.auth import get_user_model
+
+User = get_user_model() 
 
 class Roles:
     ADMIN = "admin"
@@ -95,7 +98,22 @@ class Vacante(models.Model):
     def __str__(self):
         return f"Vacante: {self.titulo} - Empresa: {self.id_empresa.nombre}"
 
+# ────────────────────────────────────────────────
+# VACANTERRHH
+# ────────────────────────────────────────────────
+class VacanteRRHH(models.Model):
+    # Mapeo explícito a las columnas que existen en la tabla SQL creada por el usuario
+    vacante = models.ForeignKey(Vacante, on_delete=models.CASCADE, db_column='vacante_id')
+    rrhh_user = models.ForeignKey(User, on_delete=models.CASCADE, db_column='user_id')  # columna en la BD: user_id
+    fecha_asignacion = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        db_table = 'core_vacante_rrhh'  # nombre real de la tabla creada en la BD
+        managed = False                # la tabla ya existe en Supabase/Postgres
+        unique_together = ('vacante', 'rrhh_user')  # Garantiza que solo un RRHH esté asignado a una vacante
+
+    def __str__(self):
+        return f"RRHH {self.rrhh_user.username} asignado a {self.vacante.titulo}"
 # ────────────────────────────────────────────────
 # COMPETENCIA
 # ────────────────────────────────────────────────
