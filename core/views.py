@@ -416,6 +416,50 @@ def listar_vacantes(request):
 
     return JsonResponse(data, safe=False, status=200)
 
+
+# ----------------------------
+# Mis vacantes asignadas (RRHH)
+# ----------------------------
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def mis_vacantes_asignadas(request):
+    """Devuelve las vacantes a las que el RRHH autenticado fue asignado.
+
+    Requiere rol RRHH. Acepta tanto usuarios con rol en Django como los que tienen
+    el rol en Supabase (se normaliza).
+    """
+    caller_role = normalize_role(getattr(request.user, 'role', None) or get_supabase_role(request.user))
+    if caller_role != Roles.EMPLEADO_RRHH:
+        return Response({'error': 'Solo usuarios RRHH pueden ver sus vacantes asignadas.'}, status=status.HTTP_403_FORBIDDEN)
+
+    asignaciones = VacanteRRHH.objects.filter(rrhh_user=request.user).select_related('vacante', 'vacante__id_empresa')
+
+    out = []
+    for a in asignaciones:
+        v = a.vacante
+        out.append({
+            'asignacion_id': a.id,
+            'fecha_asignacion': a.fecha_asignacion,
+            'vacante': {
+                'id': v.id,
+                'titulo': v.titulo,
+                'descripcion': v.descripcion,
+                'requisitos': v.requisitos,
+                'fecha_expiracion': v.fecha_expiracion,
+                'estado': v.estado,
+                'empresa_id': v.id_empresa_id,
+                'empresa_nombre': v.id_empresa.nombre if v.id_empresa else None,
+                'ubicacion': v.ubicacion,
+                'salario': str(v.salario) if v.salario is not None else None,
+                'experiencia': v.experiencia,
+                'beneficios': v.beneficios,
+                'tipo_jornada': v.tipo_jornada,
+                'modalidad_trabajo': v.modalidad_trabajo,
+            }
+        })
+
+    return JsonResponse(out, safe=False, status=200)
+
 # ----------------------------
 # Postulacion
 # ----------------------------
