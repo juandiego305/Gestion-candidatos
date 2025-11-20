@@ -148,6 +148,124 @@ def crear_vacante(request):
         status=201
     )
 
+# ----------------------------
+# Asignar empleado a empresa
+# ----------------------------
+class AsignarEmpleadoView(APIView):
+
+    def post(self, request):
+        empresa_id = request.data.get("empresa_id")
+        email = request.data.get("email")
+
+        if not empresa_id or not email:
+            return Response(
+                {"error": "Debe enviar 'empresa_id' y 'email'."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # --- 1. Verificar empresa ---
+        try:
+            empresa = Empresa.objects.get(id=empresa_id)
+        except Empresa.DoesNotExist:
+            return Response(
+                {"error": "La empresa no existe."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # --- 2. Verificar que la empresa pertenece al usuario logueado ---
+        if empresa.owner_id != request.user.id:
+            return Response(
+                {"error": "No tiene permisos para asignar empleados a esta empresa."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # --- 3. Buscar usuario por email en Supabase ---
+        try:
+            resp = supabase.table("auth_user").select("*").eq("email", email).execute()
+
+            if not resp.data:
+                return Response(
+                    {"error": "No existe un usuario con ese correo."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            usuario_supabase = resp.data[0]
+
+        except Exception as e:
+            return Response(
+                {"error": f"Error consultando Supabase: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        empleado_id = usuario_supabase["id"]
+        role = usuario_supabase.get("role")
+        id_empresa_actual = usuario_supabase.get("id_empresa")
+
+        # --- 4. Validar rol candidato ---
+        if role != "candidato":
+            return Response(
+                {"error": "Solo se pueden asignar usuarios con rol 'candidato'."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # --- 5. Validar que no esté asignado ya ---
+        if id_empresa_actual:
+            return Response(
+                {"error": "Este usuario ya está asignado a una empresa."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # --- 6. Asignar empresa al usuario ---
+        try:
+            supabase.table("auth_user").update({
+                "id_empresa": empresa.id,
+                "role": "rrhh"  # convertirlo automáticamente
+            }).eq("id", empleado_id).execute()
+
+        except Exception as e:
+            return Response(
+                {"error": f"Error actualizando Supabase: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        return Response(
+            {
+                "message": "Empleado asignado correctamente.",
+                "empresa_id": empresa.id,
+                "email": email
+            },
+            status=status.HTTP_200_OK
+        )
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def listar_trabajadores(request, empresa_id):
+
+    # 1) Validar rol del usuario logueado
+    admin_role = get_supabase_role(request.user)
+    if admin_role != "admin":
+        return Response({"error": "Solo un administrador puede ver esta información."}, status=403)
+
+    # 2) Validar que la empresa pertenezca al admin
+    try:
+        empresa = Empresa.objects.get(id=empresa_id, owner_id=request.user.id)
+    except Empresa.DoesNotExist:
+        return Response({"error": "No tiene permisos sobre esta empresa."}, status=403)
+
+    # 3) Consultar en Supabase los RRHH de esa empresa
+    resp = supabase.table("auth_user").select("id, email, role, id_empresa") \
+            .eq("id_empresa", empresa_id) \
+            .eq("role", "rrhh") \
+            .execute()
+
+    trabajadores = resp.data if resp.data else []
+
+    return Response({
+        "empresa": empresa.nombre,
+        "empresa_id": empresa.id,
+        "total_trabajadores": len(trabajadores),
+        "trabajadores": trabajadores
+    }, status=200)
 
 
 @api_view(['PUT', 'PATCH'])
@@ -836,7 +954,7 @@ class UsuarioViewSet(viewsets.ViewSet):
         group_res = supabase
 
     
-    # ----------------------------
+# ----------------------------
 # Reset de contraseña
 # ----------------------------
 class PasswordResetRequestView(APIView):
@@ -923,8 +1041,6 @@ class PerfilView(APIView):
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
-    # DATOS ADICIONALES DEL PERFIL DE USUARIO
-
 # DATOS ADICIONALES DEL PERFIL DE USUARIO
 
 class PerfilUsuarioView(APIView):

@@ -30,4 +30,10 @@ urlpatterns = [
     path('vacantes/', views.listar_vacantes, name='listar_vacantes'),
     path("vacantes/<int:vacante_id>/postular/", views.postular_vacante, name="postular_vacante"),
     path('empresas/', views.listar_empresas, name='listar_empresas'),
+
+    path('api/asignar-empleado/', views.AsignarEmpleadoView.as_view(), name='asignar-empleado'),
+    path("api/empresa/<int:empresa_id>/trabajadores/", views.listar_trabajadores, name="listar_trabajadores"),
+
+
+
 ]
