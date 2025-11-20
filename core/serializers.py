@@ -103,7 +103,7 @@ class EmpresaSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         file = validated_data.pop("logo", None)
-        for f in ("nombre", "nit", "direccion"):
+        for f in ("nombre", "nit", "direccion", "descripcion"):
             if f in validated_data:
                 setattr(instance, f, validated_data[f])
 
