@@ -39,6 +39,9 @@ from django.shortcuts import get_object_or_404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from .models import Vacante, Postulacion, Empresa
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -83,6 +86,140 @@ def normalize_role(role):
     if r in ("candidato", "candidate"):
         return Roles.CANDIDATO
     return r
+
+
+def get_supabase_empresa_id(user):
+    """Comprueba en Supabase la empresa asociada al usuario.
+
+    Devuelve un int o None.
+    """
+    try:
+        # Priorizar la tabla 'auth_user' (puede contener id_empresa)
+        def _parse_value(val):
+            if val is None:
+                return None
+            # Si ya es int
+            if isinstance(val, int):
+                return val
+            # Si es string que contiene dígitos
+            if isinstance(val, str):
+                s = val.strip()
+                if s.isdigit():
+                    return int(s)
+                # A veces viene como JSON-string o como '{"id": 3}'
+                try:
+                    import json
+                    parsed = json.loads(s)
+                    if isinstance(parsed, dict):
+                        for k in ("id", "empresa_id", "id_empresa", "company_id", "empresa"):
+                            if k in parsed and parsed[k] is not None:
+                                try:
+                                    return int(parsed[k])
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+                return None
+            # Si es dict
+            if isinstance(val, dict):
+                for k in ("id", "empresa_id", "id_empresa", "company_id", "empresa"):
+                    if k in val and val[k] is not None:
+                        try:
+                            return int(val[k])
+                        except Exception:
+                            try:
+                                return int(str(val[k]))
+                            except Exception:
+                                return None
+            # Otros tipos: intentar convertir a int
+            try:
+                return int(val)
+            except Exception:
+                return None
+
+        # 1) Revisar auth_user por id
+        try:
+            res = supabase.table("auth_user").select("*").eq("id", user.id).execute()
+            if res.data:
+                row = res.data[0]
+                # buscar claves relevantes
+                for key in ("id_empresa", "empresa_id", "company_id", "empresa"):
+                    if key in row and row.get(key) is not None:
+                        parsed = _parse_value(row.get(key))
+                        if parsed is not None:
+                            logger.debug("Found empresa in auth_user by id: %s -> %s", key, parsed)
+                            return parsed
+                # si no tiene claves, intentar revisar cualquier campo por si viene embebido
+                for k, v in row.items():
+                    parsed = _parse_value(v)
+                    if parsed is not None:
+                        logger.debug("Parsed empresa from auth_user.%s -> %s", k, parsed)
+                        return parsed
+        except Exception:
+            pass
+
+        # 2) Revisar auth_user por email
+        try:
+            res2 = supabase.table("auth_user").select("*").eq("email", user.email).execute()
+            if res2.data:
+                row = res2.data[0]
+                for key in ("id_empresa", "empresa_id", "company_id", "empresa"):
+                    if key in row and row.get(key) is not None:
+                        parsed = _parse_value(row.get(key))
+                        if parsed is not None:
+                            logger.debug("Found empresa in auth_user by email: %s -> %s", key, parsed)
+                            return parsed
+                for k, v in row.items():
+                    parsed = _parse_value(v)
+                    if parsed is not None:
+                        logger.debug("Parsed empresa from auth_user.%s -> %s", k, parsed)
+                        return parsed
+        except Exception:
+            pass
+
+        # 3) Buscar en 'usuarios' por id
+        try:
+            res3 = supabase.table("usuarios").select("*").eq("id", user.id).execute()
+            if res3.data:
+                row = res3.data[0]
+                for key in ("empresa_id", "id_empresa", "company_id", "empresa"):
+                    if key in row and row.get(key) is not None:
+                        parsed = _parse_value(row.get(key))
+                        if parsed is not None:
+                            logger.debug("Found empresa in usuarios by id: %s -> %s", key, parsed)
+                            return parsed
+                for k, v in row.items():
+                    parsed = _parse_value(v)
+                    if parsed is not None:
+                        logger.debug("Parsed empresa from usuarios.%s -> %s", k, parsed)
+                        return parsed
+        except Exception:
+            pass
+
+        # 4) Buscar en 'usuarios' por email
+        try:
+            res4 = supabase.table("usuarios").select("*").eq("email", user.email).execute()
+            if res4.data:
+                row = res4.data[0]
+                for key in ("empresa_id", "id_empresa", "company_id", "empresa"):
+                    if key in row and row.get(key) is not None:
+                        parsed = _parse_value(row.get(key))
+                        if parsed is not None:
+                            logger.debug("Found empresa in usuarios by email: %s -> %s", key, parsed)
+                            return parsed
+                for k, v in row.items():
+                    parsed = _parse_value(v)
+                    if parsed is not None:
+                        logger.debug("Parsed empresa from usuarios.%s -> %s", k, parsed)
+                        return parsed
+        except Exception:
+            pass
+
+    except Exception as e:
+        logger.exception("Error leyendo empresa de Supabase para user id=%s: %s", getattr(user, 'id', None), e)
+        return None
+
+    return None
 
 from .models import PerfilUsuario, validate_hoja_vida
 from rest_framework import status, permissions, parsers 
@@ -848,6 +985,34 @@ def asignar_rrhh_a_vacante(request, vacante_id):
     print(f"🔎 RRHH role raw: {rrhh_role_raw} -> normalized: {rrhh_role}")
     if rrhh_role != Roles.EMPLEADO_RRHH:
         return Response({'error': 'El usuario especificado no tiene el rol de RRHH.'}, status=status.HTTP_400_BAD_REQUEST)
+    # --- Validación: RRHH pertenece a la misma empresa que la vacante ---
+    try:
+        vacante_empresa_id = None
+        if getattr(vacante, 'id_empresa_id', None):
+            vacante_empresa_id = int(vacante.id_empresa_id)
+        elif getattr(vacante, 'id_empresa', None) and getattr(vacante.id_empresa, 'id', None):
+            vacante_empresa_id = int(vacante.id_empresa.id)
+    except Exception:
+        vacante_empresa_id = None
+
+    rrhh_empresa_id = get_supabase_empresa_id(rrhh_user)
+    try:
+        rrhh_empresa_id = int(rrhh_empresa_id) if rrhh_empresa_id is not None else None
+    except Exception:
+        rrhh_empresa_id = None
+
+    # Comprueba si el RRHH es owner en Django de la empresa de la vacante
+    rrhh_is_owner = False
+    try:
+        if vacante_empresa_id is not None:
+            rrhh_is_owner = Empresa.objects.filter(id=vacante_empresa_id, owner=rrhh_user).exists()
+    except Exception:
+        rrhh_is_owner = False
+
+    logger.debug("Validación empresa: vacante_empresa_id=%s rrhh_empresa_id=%s rrhh_is_owner=%s rrhh_id=%s", vacante_empresa_id, rrhh_empresa_id, rrhh_is_owner, getattr(rrhh_user, 'id', None))
+
+    if not ((vacante_empresa_id is not None and rrhh_empresa_id is not None and int(vacante_empresa_id) == int(rrhh_empresa_id)) or rrhh_is_owner):
+        return Response({'error': 'El RRHH no pertenece a la empresa de la vacante.', 'vacante_empresa_id': vacante_empresa_id, 'rrhh_empresa_id': rrhh_empresa_id, 'rrhh_is_owner': rrhh_is_owner}, status=status.HTTP_400_BAD_REQUEST)
 
     # Verificar si ya está asignado (evitar duplicados) — usar el modelo VacanteRRHH
     if VacanteRRHH.objects.filter(vacante=vacante, rrhh_user=rrhh_user).exists():
