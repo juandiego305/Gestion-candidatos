@@ -821,6 +821,11 @@ def asignar_rrhh_a_vacante(request, vacante_id):
     # Obtener la vacante
     vacante = get_object_or_404(Vacante, id=vacante_id)
 
+    # Verificar que la vacante pertenece a la empresa del admin que hace la petición
+    empresa = getattr(vacante, 'id_empresa', None)
+    if not empresa or getattr(empresa, 'owner_id', None) != request.user.id:
+        return Response({'error': 'No tiene permisos para asignar RRHH en esta vacante (pertenece a otra empresa).'}, status=status.HTTP_403_FORBIDDEN)
+
     # Obtener el RRHH a asignar: aceptamos `user_id` o `email` en el body.
     rrhh_id = request.data.get('user_id')
     rrhh_email = request.data.get('email')
