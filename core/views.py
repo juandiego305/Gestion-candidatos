@@ -15,7 +15,7 @@ from core.supabase_client import SUPABASE_URL, get_supabase_client
 from core.supabase_client import SUPABASE_SERVICE_KEY
 
 from .serializers_user import PerfilSerializer, UserSerializer
-from .models import Empresa, Postulacion
+from .models import Empresa, Postulacion, VacanteRRHH
 
 from .serializers_user import PerfilSerializer, UserSerializer, PerfilUsuarioSerializer
 from .models import Empresa
@@ -43,7 +43,6 @@ from .models import Vacante, Postulacion, Empresa
 
 
 
-
 supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
 
 def get_supabase_role(user):
@@ -52,17 +51,38 @@ def get_supabase_role(user):
     usando el id del usuario de Django.
     """
     try:
+        # Realiza la consulta en la tabla 'auth_user' en Supabase
         resp = supabase.table("auth_user").select("role").eq("id", user.id).execute()
+        
+        # Verifica si la respuesta contiene datos
         if resp.data and len(resp.data) > 0:
             role = resp.data[0].get("role")
-            print("🔥 Rol desde Supabase:", role)
+            print("🔥 Rol desde Supabase:", role)  # Esto te ayudará a depurar el valor de 'role'
             return role
         else:
-            print("⚠️ Usuario no encontrado en Supabase para id:", user.id)
+            print(f"⚠️ Usuario no encontrado en Supabase para id: {user.id}")
             return None
     except Exception as e:
-        print("⚠️ Error obteniendo rol de Supabase:", e)
+        print(f"⚠️ Error obteniendo rol de Supabase: {e}")
         return None
+
+
+def normalize_role(role):
+    """
+    Normaliza variantes posibles del rol desde Supabase o desde el atributo Django
+    y devuelve la forma canónica utilizada en la aplicación.
+    """
+    if not role:
+        return None
+    r = str(role).strip().lower()
+    # Mapear variantes comunes a los roles canónicos
+    if r in ("admin", "administrator", "owner"):
+        return Roles.ADMIN
+    if r in ("rrhh", "recursos humanos", "recursoshumanos", "empleado_rrhh", "empleado-rrhh", "rrhh_empleado"):
+        return Roles.EMPLEADO_RRHH
+    if r in ("candidato", "candidate"):
+        return Roles.CANDIDATO
+    return r
 
 from .models import PerfilUsuario, validate_hoja_vida
 from rest_framework import status, permissions, parsers 
@@ -738,7 +758,61 @@ def listar_empresas(request):
         })
 
     return JsonResponse(data, safe=False, status=200)
+# ----------------------------
+# Asignar RRHH a Vacante
+# ----------------------------
 
+User = get_user_model()
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def asignar_rrhh_a_vacante(request, vacante_id):
+    # Verificar si el usuario tiene rol 'admin' (resolver role de forma segura)
+    caller_role_raw = getattr(request.user, 'role', None) or get_supabase_role(request.user)
+    caller_role = normalize_role(caller_role_raw)
+    print(f"🔎 Caller role raw: {caller_role_raw} -> normalized: {caller_role}")
+    if caller_role != Roles.ADMIN:
+        return Response({'error': 'Solo un administrador puede asignar RRHH a vacantes.'}, status=status.HTTP_403_FORBIDDEN)
+
+    # Obtener la vacante
+    vacante = get_object_or_404(Vacante, id=vacante_id)
+
+    # Obtener el RRHH a asignar: aceptamos `user_id` o `email` en el body.
+    rrhh_id = request.data.get('user_id')
+    rrhh_email = request.data.get('email')
+
+    if not rrhh_id and not rrhh_email:
+        return Response({'error': 'Debe enviar "user_id" o "email" del RRHH a asignar.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Resolver usuario por email si se proporcionó (útil para pruebas que buscan por correo)
+    rrhh_user = None
+    if rrhh_email:
+        rrhh_user = User.objects.filter(email=rrhh_email).first()
+        if not rrhh_user:
+            return Response({'error': f'No se encontró usuario con email {rrhh_email}.'}, status=status.HTTP_404_NOT_FOUND)
+    else:
+        rrhh_user = get_object_or_404(User, id=rrhh_id)
+
+    # Comprobar rol del RRHH (usar atributo Django si existe, sino consultar Supabase)
+    rrhh_role_raw = getattr(rrhh_user, 'role', None) or get_supabase_role(rrhh_user)
+    rrhh_role = normalize_role(rrhh_role_raw)
+    print(f"🔎 RRHH role raw: {rrhh_role_raw} -> normalized: {rrhh_role}")
+    if rrhh_role != Roles.EMPLEADO_RRHH:
+        return Response({'error': 'El usuario especificado no tiene el rol de RRHH.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Verificar si ya está asignado (evitar duplicados) — usar el modelo VacanteRRHH
+    if VacanteRRHH.objects.filter(vacante=vacante, rrhh_user=rrhh_user).exists():
+        return Response({'error': f'El RRHH {rrhh_user.username} ya está asignado a esta vacante.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Crear la asignación (guardamos el id en la tabla como antes)
+    asignacion = VacanteRRHH.objects.create(vacante=vacante, rrhh_user=rrhh_user)
+
+    return Response({
+        'message': f'El RRHH {rrhh_user.username} ({rrhh_user.email}) ha sido asignado correctamente a la vacante {vacante.titulo}.',
+        'asignacion_id': asignacion.id,
+        'rrhh_id': rrhh_user.id,
+        'rrhh_email': rrhh_user.email
+    }, status=status.HTTP_201_CREATED)
 # ----------------------------
 # Usuarios
 # ----------------------------
