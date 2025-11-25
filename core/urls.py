@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import EmpresaViewSet, FavoritosView, UserViewSet, UsuarioViewSet, postular_vacante, listar_empresas
+from .views import EmpresaViewSet, FavoritosView, UserViewSet, UsuarioViewSet, postular_vacante, listar_empresas, actualizar_estado_postulacion,contactar_candidato
 
 
 router = DefaultRouter()
@@ -39,5 +39,7 @@ urlpatterns = [
     path("api/favoritos/", FavoritosView.as_view()), # GET (Ver favoritos del usuario logueado) y POST (Marcar nuevo favorito)
     path("api/favoritos/<int:candidato_id>/", FavoritosView.as_view()),
     path("vacantes/<int:id_vacante>/postulaciones/", views.listar_postulaciones_por_vacante, name="listar_postulaciones_por_vacante"), # GET (Ver postulaciones del usuario logueado)
+    path('reclutador/postulaciones/<int:postulacion_id>/estado/', actualizar_estado_postulacion),
+    path('reclutador/postulaciones/<int:postulacion_id>/contactar/', contactar_candidato),
 ]
 

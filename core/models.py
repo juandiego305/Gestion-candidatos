@@ -149,14 +149,14 @@ class Postulacion(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="postulaciones",
-        db_column="id_candidato",   # columna real en la BD
+        db_column="id_candidato",
     )
 
     vacante = models.ForeignKey(
         Vacante,
         on_delete=models.CASCADE,
         related_name="postulaciones",
-        db_column="id_vacante",     # 👈 coincide con el CREATE TABLE
+        db_column="id_vacante",
     )
 
     empresa = models.ForeignKey(
@@ -170,9 +170,12 @@ class Postulacion(models.Model):
     estado = models.CharField(max_length=50, choices=ESTADOS, default="Postulado")
     fecha_postulacion = models.DateTimeField()
 
+    # ⭐⭐ NUEVO CAMPO PARA GUARDAR COMENTARIOS / CONTACTOS ⭐⭐
+    comentarios = models.TextField(null=True, blank=True)
+
     class Meta:
-        db_table = "core_postulaciones"  # 👈 nombre exacto de la tabla
-        managed = False                  # 👈 Django NO crea/borra esta tabla
+        db_table = "core_postulaciones"
+        managed = False
 
     def __str__(self):
         return f"{self.candidato.username} - {self.empresa.nombre}"

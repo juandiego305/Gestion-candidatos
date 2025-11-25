@@ -818,6 +818,147 @@ def listar_postulaciones_por_vacante(request, id_vacante):
     serializer = PostulacionSerializer(postulaciones, many=True)
 
     return Response(serializer.data)
+# ----------------------------
+# Gestion de postulaciones
+# ----------------------------
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def actualizar_estado_postulacion(request, postulacion_id):
+    role_raw = getattr(request.user, 'role', None) or get_supabase_role(request.user)
+    role = normalize_role(role_raw)
+
+    if role not in ["admin", "empleado_rrhh"]:
+        return Response({"error": "No autorizado"}, status=403)
+
+    postulacion = get_object_or_404(
+        Postulacion.objects.select_related("vacante"),
+        id=postulacion_id
+    )
+
+    # Verificar que el RRHH esté asignado a esa vacante
+    if role == "empleado_rrhh":
+        asignado = VacanteRRHH.objects.filter(
+            vacante=postulacion.vacante,
+            rrhh_user=request.user
+        ).exists()
+        if not asignado:
+            return Response(
+                {"error": "No puedes modificar postulaciones de vacantes que no gestionas."},
+                status=403
+            )
+
+    nuevo_estado = request.data.get("estado")
+    if not nuevo_estado:
+        return Response({"error": "Debes enviar el campo 'estado'."}, status=400)
+
+    ESTADOS_VALIDOS = ["Postulado", "En revisión", "Entrevista", "Rechazado", "Contratado"]
+    if nuevo_estado not in ESTADOS_VALIDOS:
+        return Response({
+            "error": f"Estado inválido. Usa uno de: {', '.join(ESTADOS_VALIDOS)}"
+        }, status=400)
+
+    postulacion.estado = nuevo_estado
+    postulacion.save(update_fields=["estado"])
+
+    return Response({
+        "message": "Estado actualizado correctamente",
+        "postulacion_id": postulacion.id,
+        "nuevo_estado": nuevo_estado
+    })
+# ----------------------------
+# Contactar candidato
+# ----------------------------
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def contactar_candidato(request, postulacion_id):
+    """
+    Endpoint para que el reclutador (RRHH) o admin contacte a un candidato
+    y quede registro en la postulación (campo comentarios).
+    URL típica: POST /reclutador/postulaciones/<id>/contactar/
+    Body (JSON):
+    {
+        "asunto": "Invitación a entrevista",
+        "mensaje": "Hola, hemos revisado tu postulación..."
+    }
+    """
+
+    # 1️⃣ Verificar rol de quien llama (admin o RRHH)
+    caller_role_raw = getattr(request.user, 'role', None) or get_supabase_role(request.user)
+    caller_role = normalize_role(caller_role_raw)
+    print(f"👤 Caller role raw: {caller_role_raw} -> normalized: {caller_role}")
+
+    if caller_role not in (Roles.ADMIN, Roles.EMPLEADO_RRHH):
+        return Response(
+            {'error': 'Solo reclutadores (RRHH) o administradores pueden contactar candidatos.'},
+            status=403
+        )
+
+    # 2️⃣ Obtener la postulación
+    postulacion = get_object_or_404(Postulacion, id=postulacion_id)
+
+    # 3️⃣ Si es RRHH, comprobar que esté asignado a la vacante
+    if caller_role == Roles.EMPLEADO_RRHH:
+        asignado = VacanteRRHH.objects.filter(
+            vacante=postulacion.vacante,
+            rrhh_user=request.user
+        ).exists()
+
+        if not asignado:
+            return Response(
+                {'error': 'No tienes permisos sobre esta vacante/postulación.'},
+                status=403
+            )
+
+    # 4️⃣ Tomar asunto y mensaje del body
+    data = request.data
+    asunto = data.get('asunto') or 'Mensaje sobre tu postulación'
+    mensaje = data.get('mensaje')
+
+    if not mensaje:
+        return Response(
+            {'error': 'El campo "mensaje" es obligatorio.'},
+            status=400
+        )
+
+    destinatario = postulacion.candidato.email
+
+    # 5️⃣ Enviar el correo
+    try:
+        send_mail(
+            subject=asunto,
+            message=mensaje,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[destinatario],
+            fail_silently=False,
+        )
+    except Exception as e:
+        print("❌ Error enviando correo:", e)
+        return Response(
+            {'error': f'Error enviando correo: {str(e)}'},
+            status=500
+        )
+
+    # 6️⃣ Guardar comentario en la postulación (historial)
+    marca_tiempo = timezone.now().strftime("%Y-%m-%d %H:%M")
+    comentario_nuevo = (
+        f"[{marca_tiempo}] {request.user.email} envió correo al candidato:\n"
+        f"Asunto: {asunto}\n"
+        f"Mensaje: {mensaje}\n\n"
+    )
+
+    # Asegurarnos de no romper si por alguna razón no existe el campo
+    if hasattr(postulacion, "comentarios"):
+        if postulacion.comentarios:
+            postulacion.comentarios += comentario_nuevo
+        else:
+            postulacion.comentarios = comentario_nuevo
+        postulacion.save(update_fields=["comentarios"])
+
+    # 7️⃣ Respuesta
+    return Response(
+        {'message': f'Correo enviado a {destinatario}'},
+        status=200
+    )
 
 
 # ----------------------------
