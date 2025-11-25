@@ -20,7 +20,7 @@ from .models import Empresa, Postulacion, VacanteRRHH
 from .serializers_user import PerfilSerializer, UserSerializer, PerfilUsuarioSerializer
 from .models import Empresa
 
-from .serializers import EmpresaSerializer, UsuarioSerializer, supabase
+from .serializers import EmpresaSerializer, UsuarioSerializer, PostulacionSerializer, supabase
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
 from .models import Roles
@@ -40,6 +40,8 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from .models import Vacante, Postulacion, Empresa
 import logging
+from .models import Favorito
+from .serializers import FavoritoSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -791,6 +793,32 @@ def postular_vacante(request, vacante_id):
         "cv_url": url_final
     }, status=201)
 
+from rest_framework_simplejwt.authentication import JWTAuthentication
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def listar_postulaciones_por_vacante(request, id_vacante):
+
+    # 🔥 Obtener rol e id_empresa directamente desde Supabase
+    role = get_supabase_role(request.user)
+    id_empresa_usuario = get_supabase_empresa_id(request.user)
+
+    print("🔥 Rol del usuario:", role)
+    print("🏭 Empresa del usuario:", id_empresa_usuario)
+
+    vacante = get_object_or_404(Vacante, id=id_vacante)
+
+    if role not in ["rrhh", "admin"]:
+        return Response({"detail": "No autorizado"}, status=403)
+
+    if role == "rrhh" and id_empresa_usuario != vacante.id_empresa_id:
+        return Response({"detail": "No pertenece a tu empresa"}, status=403)
+
+    postulaciones = Postulacion.objects.filter(vacante_id=id_vacante)
+    serializer = PostulacionSerializer(postulaciones, many=True)
+
+    return Response(serializer.data)
+
 
 # ----------------------------
 # Permisos
@@ -861,6 +889,28 @@ class IsAdminUserOrReadSelf(permissions.BasePermission):
             return  obj.empresa_id == request.user.empresa_id
         return obj.get("email") == getattr(request.user, "email", None) or getattr(obj, "id", None) == getattr(request.user, "id", None)
 
+from rest_framework.permissions import BasePermission
+
+class IsAdminOrRRHH(BasePermission):
+      def has_permission(self, request, view):
+        user = request.user
+
+        # Si no está autenticado, no pasa
+        if not user or not user.is_authenticated:
+            return False
+
+        # Obtener el rol desde Supabase
+        data = supabase.table("auth_user") \
+                       .select("role") \
+                       .eq("id", user.id) \
+                       .execute()
+
+        if not data.data:
+            return False
+
+        role = data.data[0]["role"]
+
+        return role in ["admin", "rrhh"]
 
 # ----------------------------
 # Home
@@ -1514,3 +1564,55 @@ class PerfilUsuarioView(APIView):
             return Response(serializer.data)
 
         return Response(serializer.errors, status=400)
+
+
+class FavoritosView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminOrRRHH]   # Solo admin y RRHH pueden gestionar favoritos
+    # ---------------------------
+    # GET → Listar favoritos
+    # ---------------------------
+    def get(self, request):
+        rrhh = request.user.id
+        favoritos = Favorito.objects.filter(rrhh_id=rrhh)
+
+        serializer = FavoritoSerializer(favoritos, many=True)
+        return Response(serializer.data)
+
+    # ---------------------------
+    # POST → Marcar favorito
+    # ---------------------------
+    def post(self, request):
+        rrhh = request.user.id
+        candidato_id = request.data.get("candidato_id")
+
+        if not candidato_id:
+            return Response({"error": "Debe enviar candidato_id"}, status=400)
+
+        favorito, creado = Favorito.objects.get_or_create(
+            rrhh_id=rrhh,
+            candidato_id=candidato_id
+        )
+
+        if not creado:
+            return Response({"message": "El candidato ya está marcado como favorito."})
+
+        return Response(FavoritoSerializer(favorito).data, status=201)
+
+    # ---------------------------
+    # DELETE → Quitar favorito
+    # ---------------------------
+    def delete(self, request, candidato_id=None):
+        rrhh = request.user.id
+
+        if not candidato_id:
+            return Response({"error": "Debe enviar candidato_id en la URL"}, status=400)
+
+        eliminado = Favorito.objects.filter(
+            rrhh_id=rrhh,
+            candidato_id=candidato_id
+        ).delete()
+
+        if eliminado[0] == 0:
+            return Response({"error": "Este candidato no estaba en favoritos."}, status=404)
+
+        return Response({"message": "Favorito eliminado correctamente."})

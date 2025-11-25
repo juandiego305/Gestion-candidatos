@@ -149,7 +149,7 @@ class Postulacion(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="postulaciones",
-        db_column="candidato_id",   # columna real en la BD
+        db_column="id_candidato",   # columna real en la BD
     )
 
     vacante = models.ForeignKey(
@@ -163,7 +163,7 @@ class Postulacion(models.Model):
         Empresa,
         on_delete=models.CASCADE,
         related_name="postulaciones",
-        db_column="empresa_id",
+        db_column="id_empresa",
     )
 
     cv_url = models.URLField(null=True, blank=True)
@@ -202,6 +202,7 @@ def validate_hoja_vida(file):
 
 # ────────────────────────────────────────────────
 # PERFIL USUARIO - DATOS ADICIONALES
+# ────────────────────────────────────────────────
     
 class PerfilUsuario(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
@@ -220,3 +221,29 @@ class PerfilUsuario(models.Model):
         return f"Perfil de {self.user.username}"
 
       #  return f"{self.candidato.username} - {self.vacante.titulo}"
+
+# ────────────────────────────────────────────────
+# FAVORITOS
+class Favorito(models.Model):
+    rrhh = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        db_column='rrhh_id',
+        related_name='favoritos_marcados'
+    )
+    candidato = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        db_column='candidato_id',
+        related_name='favorito_de'
+    )
+    fecha_marcado = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'core_favoritos'
+        managed = False
+        unique_together = ('rrhh', 'candidato')
+
+    def __str__(self):
+        return f"{self.rrhh.username} → {self.candidato.username}"
+    
