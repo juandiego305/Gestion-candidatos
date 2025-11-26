@@ -15,12 +15,12 @@ from core.supabase_client import SUPABASE_URL, get_supabase_client
 from core.supabase_client import SUPABASE_SERVICE_KEY
 
 from .serializers_user import PerfilSerializer, UserSerializer
-from .models import Empresa, Postulacion, VacanteRRHH
+from .models import Empresa, Entrevista, Postulacion, VacanteRRHH
 
 from .serializers_user import PerfilSerializer, UserSerializer, PerfilUsuarioSerializer
 from .models import Empresa
 
-from .serializers import EmpresaSerializer, UsuarioSerializer, PostulacionSerializer, supabase
+from .serializers import EmpresaSerializer, UsuarioSerializer, PostulacionSerializer, EntrevistaSerializer, supabase
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
 from .models import Roles
@@ -426,6 +426,12 @@ def listar_trabajadores(request, empresa_id):
         "trabajadores": trabajadores
     }, status=200)
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def obtener_vacante(request, vacante_id):
+    vacante = get_object_or_404(Vacante, id=vacante_id)
+    serializer = VacanteSerializer(vacante)
+    return Response(serializer.data, status=status.HTTP_200_OK)
 
 @api_view(['PUT', 'PATCH'])
 @permission_classes([IsAuthenticated])
@@ -1757,3 +1763,58 @@ class FavoritosView(APIView):
             return Response({"error": "Este candidato no estaba en favoritos."}, status=404)
 
         return Response({"message": "Favorito eliminado correctamente."})
+
+# ----------------------------
+# Entrevistas
+# ----------------------------
+class EntrevistaView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    # GET → listar por postulacion o traer 1 entrevista
+    def get(self, request, postulacion_id=None, entrevista_id=None):
+
+        # GET /entrevistas/postulacion/<id>/  → listar
+        if postulacion_id:
+            entrevistas = Entrevista.objects.filter(postulacion_id=postulacion_id)
+            serializer = EntrevistaSerializer(entrevistas, many=True)
+            return Response(serializer.data)
+
+        # GET /entrevistas/<id>/  → una sola entrevista
+        entrevista = get_object_or_404(Entrevista, id=entrevista_id)
+        serializer = EntrevistaSerializer(entrevista)
+        return Response(serializer.data)
+
+    # POST → crear una entrevista
+    def post(self, request):
+        serializer = EntrevistaSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+
+    # PUT / PATCH → actualizar una entrevista
+    def put(self, request, entrevista_id):
+        entrevista = get_object_or_404(Entrevista, id=entrevista_id)
+        serializer = EntrevistaSerializer(entrevista, data=request.data, partial=False)
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=400)
+
+    def patch(self, request, entrevista_id):
+        entrevista = get_object_or_404(Entrevista, id=entrevista_id)
+        serializer = EntrevistaSerializer(entrevista, data=request.data, partial=True)
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=400)
+
+    # DELETE → eliminar una entrevista
+    def delete(self, request, entrevista_id):
+        entrevista = get_object_or_404(Entrevista, id=entrevista_id)
+        entrevista.delete()
+        return Response(status=204)

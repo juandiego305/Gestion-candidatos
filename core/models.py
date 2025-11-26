@@ -251,3 +251,19 @@ class Favorito(models.Model):
     def __str__(self):
         return f"{self.rrhh.username} → {self.candidato.username}"
     
+# ────────────────────────────────────────────────
+# ENTREVISTA
+# ────────────────────────────────────────────────
+class Entrevista(models.Model):
+    postulacion = models.ForeignKey(Postulacion, on_delete=models.CASCADE, related_name="entrevistas")
+
+    fecha = models.DateField()
+    hora = models.TimeField()
+    medio = models.CharField(max_length=50)  # "Meet", "Teams", "Zoom", "Presencial"
+    valoracion = models.IntegerField(null=True, blank=True)  # 1–5
+    descripcion = models.TextField(null=True, blank=True)
+
+    creada_en = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Entrevista {self.id} para {self.postulacion}"
