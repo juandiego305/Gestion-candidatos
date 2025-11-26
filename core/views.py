@@ -426,6 +426,12 @@ def listar_trabajadores(request, empresa_id):
         "trabajadores": trabajadores
     }, status=200)
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def obtener_vacante(request, vacante_id):
+    vacante = get_object_or_404(Vacante, id=vacante_id)
+    serializer = VacanteSerializer(vacante)
+    return Response(serializer.data, status=status.HTTP_200_OK)
 
 @api_view(['PUT', 'PATCH'])
 @permission_classes([IsAuthenticated])
