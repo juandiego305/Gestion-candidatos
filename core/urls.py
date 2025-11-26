@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import EmpresaViewSet, FavoritosView, UserViewSet, UsuarioViewSet, postular_vacante, listar_empresas, actualizar_estado_postulacion,contactar_candidato
+from .views import EmpresaViewSet, EntrevistaView, FavoritosView, UserViewSet, UsuarioViewSet, postular_vacante, listar_empresas, actualizar_estado_postulacion,contactar_candidato
 
 
 router = DefaultRouter()
@@ -43,5 +43,16 @@ urlpatterns = [
     path("vacantes/<int:id_vacante>/postulaciones/", views.listar_postulaciones_por_vacante, name="listar_postulaciones_por_vacante"), # GET (Ver postulaciones del usuario logueado)
     path('reclutador/postulaciones/<int:postulacion_id>/estado/', actualizar_estado_postulacion),
     path('reclutador/postulaciones/<int:postulacion_id>/contactar/', contactar_candidato),
+    
+    # Crear entrevista
+    path("api/entrevistas/", EntrevistaView.as_view(), name="crear_entrevista"),
+    # Listar entrevistas por postulacion
+    path("api/entrevistas/postulacion/<int:postulacion_id>/", EntrevistaView.as_view(),
+         name="listar_entrevistas"),
+    # Obtener, actualizar o eliminar una entrevista
+    path("api/entrevistas/<int:entrevista_id>/", EntrevistaView.as_view(),
+         name="entrevista_detalle"),
+
+
 ]
 

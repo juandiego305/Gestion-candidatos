@@ -4,7 +4,7 @@ from django.contrib.auth.models import Group
 from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 from .supabase_client import supabase
-from .models import Favorito, Vacante, Postulacion, Empresa
+from .models import Entrevista, Favorito, Vacante, Postulacion, Empresa
 
 
 ALLOWED_TYPES = {"image/jpeg", "image/png"}
@@ -199,3 +199,19 @@ class FavoritoSerializer(serializers.ModelSerializer):
 
     def get_nombre_candidato(self, obj):
         return f"{obj.candidato.first_name} {obj.candidato.last_name}".strip()
+    
+
+class EntrevistaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Entrevista
+        fields = [
+            "id",
+            "postulacion",
+            "fecha",
+            "hora",
+            "medio",
+            "valoracion",
+            "descripcion",
+            "creada_en"
+        ]
+
