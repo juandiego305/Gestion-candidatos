@@ -142,7 +142,8 @@ class Postulacion(models.Model):
         ("Postulado", "Postulado"),
         ("En revisión", "En revisión"),
         ("Rechazado", "Rechazado"),
-        ("Aceptado", "Aceptado"),
+        ("Entrevista", "Entrevista"),
+        ("Contratado", "Contratado"),
     ]
 
     candidato = models.ForeignKey(
