@@ -1770,29 +1770,107 @@ class FavoritosView(APIView):
 class EntrevistaView(APIView):
     permission_classes = [IsAuthenticated]
 
+    # ----------------------------
+    # Generar archivo .ics
+    # ----------------------------
+    def generar_ics(self, entrevista):
+
+        # formatear fecha y hora inicio
+        start = entrevista.fecha.strftime("%Y%m%d") + "T" + entrevista.hora.strftime("%H%M%S")
+
+        # duración predeterminada 1 hora
+        from datetime import datetime, timedelta
+        end_time = datetime.combine(entrevista.fecha, entrevista.hora) + timedelta(hours=1)
+        end = end_time.strftime("%Y%m%dT%H%M%S")
+
+        return f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//TalentoHub//ES
+CALSCALE:GREGORIAN
+METHOD:REQUEST
+BEGIN:VEVENT
+DTSTART:{start}
+DTEND:{end}
+SUMMARY:Entrevista – Talento Hub
+DESCRIPTION:{entrevista.descripcion}\\nLink reunión: {entrevista.medio}
+LOCATION:{entrevista.medio}
+STATUS:CONFIRMED
+END:VEVENT
+END:VCALENDAR
+"""
+
+    # ----------------------------
+    # Enviar correo
+    # ----------------------------
+    def enviar_correo(self, entrevista):
+        asunto = "Entrevista Programada – Talento Hub"
+
+        mensaje = f"""
+Hola {entrevista.postulacion.candidato.first_name},
+
+Tu entrevista ha sido agendada:
+
+📅 Fecha: {entrevista.fecha}
+🕒 Hora: {entrevista.hora}
+🔗 Reunión: {entrevista.medio}
+
+Adjunto encontrarás la invitación para agregarla a tu Calendar.
+
+Saludos,
+Equipo Talento Hub
+"""
+
+        # correo del candidato
+        correo_destino = entrevista.postulacion.candidato.email
+
+        from django.core.mail import EmailMessage
+
+        email = EmailMessage(
+            asunto,
+            mensaje,
+            "no-reply@talentohub.com",  # cambia si quieres
+            [correo_destino]
+        )
+
+        # adjuntar archivo ICS
+        archivo_ics = self.generar_ics(entrevista)
+        email.attach("entrevista.ics", archivo_ics, "text/calendar")
+
+        email.send()
+
+    # ----------------------------
     # GET → listar por postulacion o traer 1 entrevista
+    # ----------------------------
     def get(self, request, postulacion_id=None, entrevista_id=None):
 
-        # GET /entrevistas/postulacion/<id>/  → listar
         if postulacion_id:
             entrevistas = Entrevista.objects.filter(postulacion_id=postulacion_id)
             serializer = EntrevistaSerializer(entrevistas, many=True)
             return Response(serializer.data)
 
-        # GET /entrevistas/<id>/  → una sola entrevista
         entrevista = get_object_or_404(Entrevista, id=entrevista_id)
         serializer = EntrevistaSerializer(entrevista)
         return Response(serializer.data)
 
-    # POST → crear una entrevista
+    # ----------------------------
+    # POST → crear una entrevista (MEJORADO)
+    # ----------------------------
     def post(self, request):
         serializer = EntrevistaSerializer(data=request.data)
+
         if serializer.is_valid():
-            serializer.save()
+            entrevista = serializer.save()
+
+            # enviar correo automático
+            self.enviar_correo(entrevista)
+
             return Response(serializer.data, status=201)
+
         return Response(serializer.errors, status=400)
 
-    # PUT / PATCH → actualizar una entrevista
+    # ----------------------------
+    # PUT
+    # ----------------------------
     def put(self, request, entrevista_id):
         entrevista = get_object_or_404(Entrevista, id=entrevista_id)
         serializer = EntrevistaSerializer(entrevista, data=request.data, partial=False)
@@ -1803,6 +1881,9 @@ class EntrevistaView(APIView):
 
         return Response(serializer.errors, status=400)
 
+    # ----------------------------
+    # PATCH
+    # ----------------------------
     def patch(self, request, entrevista_id):
         entrevista = get_object_or_404(Entrevista, id=entrevista_id)
         serializer = EntrevistaSerializer(entrevista, data=request.data, partial=True)
@@ -1813,7 +1894,9 @@ class EntrevistaView(APIView):
 
         return Response(serializer.errors, status=400)
 
-    # DELETE → eliminar una entrevista
+    # ----------------------------
+    # DELETE
+    # ----------------------------
     def delete(self, request, entrevista_id):
         entrevista = get_object_or_404(Entrevista, id=entrevista_id)
         entrevista.delete()

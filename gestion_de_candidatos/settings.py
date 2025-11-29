@@ -177,9 +177,9 @@ EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = 'yef32.0914@gmail.com'
-EMAIL_HOST_PASSWORD = 'mfbl dycv oeap jlco'
-DEFAULT_FROM_EMAIL = 'yef32.0914@gmail.com'
+EMAIL_HOST_USER = 'talentohub2025@gmail.com'
+EMAIL_HOST_PASSWORD = 'ejsu oaiq zivq zdus'
+DEFAULT_FROM_EMAIL = 'talentohub2025@gmail.com'
 
 # === Configuración de Supabase ===
 SUPABASE_URL = os.getenv("SUPABASE_URL")
