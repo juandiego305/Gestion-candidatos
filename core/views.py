@@ -831,19 +831,15 @@ def listar_postulaciones_por_vacante(request, id_vacante):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([permissions.AllowAny])
 def metrics_dashboard(request):
-    """Devuelve métricas agregadas por vacante. Solo admins.
+    """Devuelve métricas agregadas por vacante. Público.
 
     Filtros por query params:
     - from: ISO date (yyyy-mm-dd) fecha mínima de postulacion
     - to: ISO date fecha máxima
     - area: cadena que filtra `Vacante.ubicacion` (icontains)
     """
-    caller_role = normalize_role(getattr(request.user, 'role', None) or get_supabase_role(request.user))
-    if caller_role != Roles.ADMIN:
-        return Response({'error': 'No autorizado'}, status=403)
-
     fecha_from = request.GET.get('from')
     fecha_to = request.GET.get('to')
     area = request.GET.get('area')
@@ -892,18 +888,14 @@ def metrics_dashboard(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([permissions.AllowAny])
 def export_metrics_vacante(request, vacante_id, fmt):
     """Exporta métricas para una vacante dada usando ruta limpia.
 
     URL: /api/metrics/vacante/<vacante_id>/export/<fmt>/
     fmt: 'csv' | 'excel' | 'pdf'
-    Solo administradores pueden usarlo.
+    Público - no requiere autenticación.
     """
-    caller_role = normalize_role(getattr(request.user, 'role', None) or get_supabase_role(request.user))
-    if caller_role != Roles.ADMIN:
-        return Response({'error': 'No autorizado'}, status=403)
-
     fmt = (fmt or '').lower()
     if fmt not in ('csv', 'excel', 'pdf'):
         return Response({'error': "Formato inválido. Use 'csv' o 'pdf'."}, status=400)
