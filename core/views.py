@@ -42,6 +42,10 @@ from .models import Vacante, Postulacion, Empresa
 import logging
 from .models import Favorito
 from .serializers import FavoritoSerializer
+from django.db.models import Count, Max
+import io
+import csv
+from io import BytesIO
 
 logger = logging.getLogger(__name__)
 
@@ -824,6 +828,408 @@ def listar_postulaciones_por_vacante(request, id_vacante):
     serializer = PostulacionSerializer(postulaciones, many=True)
 
     return Response(serializer.data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def metrics_dashboard(request):
+    """Devuelve métricas agregadas por vacante. Solo admins.
+
+    Filtros por query params:
+    - from: ISO date (yyyy-mm-dd) fecha mínima de postulacion
+    - to: ISO date fecha máxima
+    - area: cadena que filtra `Vacante.ubicacion` (icontains)
+    """
+    caller_role = normalize_role(getattr(request.user, 'role', None) or get_supabase_role(request.user))
+    if caller_role != Roles.ADMIN:
+        return Response({'error': 'No autorizado'}, status=403)
+
+    fecha_from = request.GET.get('from')
+    fecha_to = request.GET.get('to')
+    area = request.GET.get('area')
+    # Aceptar vacante_id o id_vacante como query param (por compatibilidad con Postman screenshots)
+    vacante_param = request.GET.get('vacante_id') or request.GET.get('id_vacante')
+
+    vacantes_qs = Vacante.objects.all()
+    if vacante_param:
+        try:
+            vac_id = int(vacante_param)
+            vacantes_qs = vacantes_qs.filter(id=vac_id)
+        except Exception:
+            pass
+    if area:
+        vacantes_qs = vacantes_qs.filter(ubicacion__icontains=area)
+
+    out = []
+    for v in vacantes_qs:
+        postulaciones = Postulacion.objects.filter(vacante=v)
+        if fecha_from:
+            try:
+                postulaciones = postulaciones.filter(fecha_postulacion__gte=fecha_from)
+            except Exception:
+                pass
+        if fecha_to:
+            try:
+                postulaciones = postulaciones.filter(fecha_postulacion__lte=fecha_to)
+            except Exception:
+                pass
+
+        total = postulaciones.count()
+        por_estado = {row['estado']: row['count'] for row in postulaciones.values('estado').annotate(count=Count('id'))}
+        ultima = postulaciones.aggregate(last=Max('fecha_postulacion')).get('last')
+
+        out.append({
+            'vacante_id': v.id,
+            'titulo': v.titulo,
+            'empresa_id': v.id_empresa_id,
+            'empresa_nombre': v.id_empresa.nombre if v.id_empresa else None,
+            'total_postulaciones': total,
+            'postulaciones_por_estado': por_estado,
+            'ultima_postulacion': ultima,
+        })
+
+    return Response({'vacantes': out})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def export_metrics_vacante(request, vacante_id, fmt):
+    """Exporta métricas para una vacante dada usando ruta limpia.
+
+    URL: /api/metrics/vacante/<vacante_id>/export/<fmt>/
+    fmt: 'csv' | 'excel' | 'pdf'
+    Solo administradores pueden usarlo.
+    """
+    caller_role = normalize_role(getattr(request.user, 'role', None) or get_supabase_role(request.user))
+    if caller_role != Roles.ADMIN:
+        return Response({'error': 'No autorizado'}, status=403)
+
+    fmt = (fmt or '').lower()
+    if fmt not in ('csv', 'excel', 'pdf'):
+        return Response({'error': "Formato inválido. Use 'csv' o 'pdf'."}, status=400)
+
+    fecha_from = request.GET.get('from')
+    fecha_to = request.GET.get('to')
+    area = request.GET.get('area')
+
+    try:
+        vacante = Vacante.objects.get(id=vacante_id)
+    except Vacante.DoesNotExist:
+        return Response({'error': 'Vacante no encontrada'}, status=404)
+
+    vacantes_qs = Vacante.objects.filter(id=vacante_id)
+
+    rows = []
+    header = ['vacante_id', 'titulo', 'empresa_id', 'empresa_nombre', 'total_postulaciones', 'ultima_postulacion', 'estado', 'estado_count']
+
+    for v in vacantes_qs:
+        postulaciones = Postulacion.objects.filter(vacante=v)
+        if fecha_from:
+            postulaciones = postulaciones.filter(fecha_postulacion__gte=fecha_from)
+        if fecha_to:
+            postulaciones = postulaciones.filter(fecha_postulacion__lte=fecha_to)
+
+        total = postulaciones.count()
+        ultima = postulaciones.aggregate(last=Max('fecha_postulacion')).get('last')
+        estados = postulaciones.values('estado').annotate(count=Count('id'))
+        if not estados:
+            rows.append([v.id, v.titulo, v.id_empresa_id, getattr(v.id_empresa, 'nombre', None), total, ultima, None, 0])
+        else:
+            for s in estados:
+                rows.append([v.id, v.titulo, v.id_empresa_id, getattr(v.id_empresa, 'nombre', None), total, ultima, s['estado'], s['count']])
+
+    # CSV/Excel
+    if fmt in ('excel', 'csv'):
+        sio = io.StringIO()
+        writer = csv.writer(sio)
+        writer.writerow(header)
+        for r in rows:
+            writer.writerow([str(c) if c is not None else '' for c in r])
+        content = sio.getvalue()
+        filename = f"metrics_vacante_{vacante_id}.csv"
+        resp = HttpResponse(content, content_type='text/csv')
+        resp['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return resp
+
+    # PDF usando matplotlib para un gráfico más bonito y opcional logo de empresa
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.units import inch
+        from reportlab.lib.utils import ImageReader
+        import urllib.request
+        from PIL import Image
+    except Exception:
+        return Response({'error': "Para exportar PDF instale 'matplotlib' y 'reportlab' (pip install matplotlib reportlab pillow)."}, status=400)
+
+    # Preparar datos
+    v = vacante
+    postulaciones = Postulacion.objects.filter(vacante=v)
+    if fecha_from:
+        postulaciones = postulaciones.filter(fecha_postulacion__gte=fecha_from)
+    if fecha_to:
+        postulaciones = postulaciones.filter(fecha_postulacion__lte=fecha_to)
+
+    total = postulaciones.count()
+    estados_q = list(postulaciones.values('estado').annotate(count=Count('id')).order_by('-count'))
+    estados = [e['estado'] for e in estados_q] if estados_q else []
+    counts = [e['count'] for e in estados_q] if estados_q else []
+
+    # Generar gráfico con matplotlib
+    fig = plt.figure(figsize=(7.5, 4))
+    ax = fig.add_subplot(111)
+    if counts:
+        bars = ax.bar(range(len(counts)), counts, color='#e74c3c')
+        ax.set_xticks(range(len(counts)))
+        ax.set_xticklabels(estados, rotation=30, ha='right')
+        ax.set_ylabel('Cantidad')
+        ax.set_title(f'Postulaciones por estado - Vacante {v.id}')
+        # Anotar valores encima de barras
+        for bar in bars:
+            hgt = bar.get_height()
+            ax.annotate(f'{int(hgt)}', xy=(bar.get_x() + bar.get_width() / 2, hgt), xytext=(0, 4),
+                        textcoords='offset points', ha='center', va='bottom', fontsize=9)
+    else:
+        ax.text(0.5, 0.5, 'No hay postulaciones', ha='center', va='center')
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    fig.tight_layout()
+    img_buf = BytesIO()
+    fig.savefig(img_buf, format='png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    img_buf.seek(0)
+
+    # Construir PDF e insertar imagen
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    w, h = letter
+
+    # Header: título y metadata
+    c.setFont('Helvetica-Bold', 16)
+    c.drawString(40, h - 40, f"Reporte de métricas - Vacante {v.id}: {v.titulo}")
+    c.setFont('Helvetica', 9)
+    empresa_nombre = getattr(v.id_empresa, 'nombre', None) if getattr(v, 'id_empresa', None) else ''
+    c.drawString(40, h - 60, f"Empresa: {empresa_nombre}    Vacante ID: {v.id}")
+    ultima = postulaciones.aggregate(last=Max('fecha_postulacion')).get('last')
+    c.drawString(40, h - 75, f"Total postulaciones: {total}    Última postulación: {ultima}")
+
+    # Insertar logo si existe
+    logo_y = h - 40
+    logo_size = 60
+    logo_url = getattr(v.id_empresa, 'logo_url', None) if getattr(v, 'id_empresa', None) else None
+    if logo_url:
+        try:
+            with urllib.request.urlopen(logo_url, timeout=5) as resp:
+                logo_bytes = resp.read()
+            logo_img = Image.open(BytesIO(logo_bytes))
+            logo_img_reader = ImageReader(BytesIO(logo_bytes))
+            c.drawImage(logo_img_reader, w - 40 - logo_size, h - 40 - (logo_size/2), width=logo_size, height=logo_size, preserveAspectRatio=True, mask='auto')
+        except Exception:
+            # si falla el logo, no interrumpe la generación
+            logger.warning('No se pudo descargar/incluir el logo de la empresa: %s', logo_url)
+
+    # Dibujar el gráfico PNG debajo del header
+    img_reader = ImageReader(img_buf)
+    img_w = w - 80
+    img_h = 3.5 * inch
+    c.drawImage(img_reader, 40, h - 120 - img_h, width=img_w, height=img_h, preserveAspectRatio=True, mask='auto')
+
+    # Añadir tabla simple de estados y conteos
+    text_y = h - 120 - img_h - 20
+    c.setFont('Helvetica-Bold', 11)
+    c.drawString(40, text_y, 'Detalle por estado:')
+    c.setFont('Helvetica', 10)
+    ty = text_y - 14
+    if estados_q:
+        for e in estados_q:
+            c.drawString(48, ty, f"- {e['estado']}: {e['count']}")
+            ty -= 12
+    else:
+        c.drawString(48, ty, 'No hay estados para mostrar')
+
+    # Footer: fecha de generación
+    c.setFont('Helvetica-Oblique', 8)
+    c.drawString(40, 20, f"Generado: {timezone.now().isoformat()}")
+
+    c.showPage()
+    c.save()
+    buffer.seek(0)
+    filename = f"metrics_vacante_{vacante_id}.pdf"
+    return HttpResponse(buffer.getvalue(), content_type='application/pdf', headers={
+        'Content-Disposition': f'attachment; filename="{filename}"'
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def export_metrics(request):
+    """Exporta métricas (CSV o PDF) para una o varias vacantes.
+
+    Query params:
+    - format: 'excel'|'csv'|'pdf' (por defecto 'excel' -> CSV)
+    - vacante_id: opcional; si viene, exporta solo esa vacante
+    - from, to, area: mismos filtros que `metrics_dashboard`
+    """
+    caller_role = normalize_role(getattr(request.user, 'role', None) or get_supabase_role(request.user))
+    if caller_role != Roles.ADMIN:
+        return Response({'error': 'No autorizado'}, status=403)
+
+    # No asumir 'excel' por defecto: requerimos que el cliente especifique el formato.
+    fmt_raw = request.GET.get('format')
+    logger.debug("Export metrics called with query params: %s", dict(request.GET))
+    if not fmt_raw:
+        return Response({'error': "Debe indicar el query param 'format' (csv|excel|pdf)."}, status=400)
+    fmt = fmt_raw.lower()
+    # Aceptar ambos nombres para vacante en querystring
+    vacante_id = request.GET.get('vacante_id') or request.GET.get('id_vacante')
+
+    # Reusar lógica de metrics_dashboard simplificada
+    fecha_from = request.GET.get('from')
+    fecha_to = request.GET.get('to')
+    area = request.GET.get('area')
+
+    vacantes_qs = Vacante.objects.all()
+    if vacante_id:
+        try:
+            vacantes_qs = vacantes_qs.filter(id=int(vacante_id))
+        except Exception:
+            pass
+    if area:
+        vacantes_qs = vacantes_qs.filter(ubicacion__icontains=area)
+
+    rows = []
+    header = ['vacante_id', 'titulo', 'empresa_id', 'empresa_nombre', 'total_postulaciones', 'ultima_postulacion', 'estado', 'estado_count']
+
+    for v in vacantes_qs:
+        postulaciones = Postulacion.objects.filter(vacante=v)
+        if fecha_from:
+            postulaciones = postulaciones.filter(fecha_postulacion__gte=fecha_from)
+        if fecha_to:
+            postulaciones = postulaciones.filter(fecha_postulacion__lte=fecha_to)
+
+        total = postulaciones.count()
+        ultima = postulaciones.aggregate(last=Max('fecha_postulacion')).get('last')
+        estados = postulaciones.values('estado').annotate(count=Count('id'))
+        if not estados:
+            rows.append([v.id, v.titulo, v.id_empresa_id, getattr(v.id_empresa, 'nombre', None), total, ultima, None, 0])
+        else:
+            for s in estados:
+                rows.append([v.id, v.titulo, v.id_empresa_id, getattr(v.id_empresa, 'nombre', None), total, ultima, s['estado'], s['count']])
+
+    # CSV/Excel (CSV compatible con Excel)
+    if fmt in ('excel', 'csv'):
+        sio = io.StringIO()
+        writer = csv.writer(sio)
+        writer.writerow(header)
+        for r in rows:
+            writer.writerow([str(c) if c is not None else '' for c in r])
+        content = sio.getvalue()
+        filename = f"metrics_{vacante_id or 'all'}.csv"
+        resp = HttpResponse(content, content_type='text/csv')
+        resp['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return resp
+
+    # PDF (intento con reportlab si está instalado)
+    if fmt == 'pdf':
+        try:
+            from reportlab.lib.pagesizes import letter
+            from reportlab.pdfgen import canvas
+            from reportlab.lib import colors
+            from reportlab.lib.units import inch
+            from reportlab.graphics.shapes import Drawing, String
+            from reportlab.graphics.charts.barcharts import VerticalBarChart
+            from reportlab.graphics import renderPDF
+        except Exception:
+            return Response({'error': "Para exportar PDF instale 'reportlab' (pip install reportlab) o use format=csv."}, status=400)
+
+        buffer = BytesIO()
+        c = canvas.Canvas(buffer, pagesize=letter)
+        w, h = letter
+
+        # Organizar los datos por vacante y generar una página por vacante
+        for v in vacantes_qs:
+            # Cabecera
+            c.setFont('Helvetica-Bold', 14)
+            c.drawString(40, h - 40, f"Reporte de métricas - Vacante {v.id}: {v.titulo}")
+
+            # Subtítulo empresa y fecha
+            c.setFont('Helvetica', 9)
+            empresa_nombre = getattr(v.id_empresa, 'nombre', None) if getattr(v, 'id_empresa', None) else ''
+            c.drawString(40, h - 60, f"Empresa: {empresa_nombre}    Vacante ID: {v.id}")
+
+            # Recalcular postulaciones y estados para esta vacante
+            postulaciones = Postulacion.objects.filter(vacante=v)
+            if fecha_from:
+                postulaciones = postulaciones.filter(fecha_postulacion__gte=fecha_from)
+            if fecha_to:
+                postulaciones = postulaciones.filter(fecha_postulacion__lte=fecha_to)
+
+            total = postulaciones.count()
+            estados_q = list(postulaciones.values('estado').annotate(count=Count('id')).order_by('-count'))
+
+            # Texto resumen
+            c.setFont('Helvetica', 10)
+            c.drawString(40, h - 90, f"Total postulaciones: {total}")
+            ultima = postulaciones.aggregate(last=Max('fecha_postulacion')).get('last')
+            c.drawString(200, h - 90, f"Última postulación: {ultima}")
+
+            # Preparar datos para gráfico
+            estados = [e['estado'] for e in estados_q]
+            counts = [e['count'] for e in estados_q]
+
+            if total > 0 and counts:
+                # Dibujar gráfico de barras usando Graphics
+                drawing_width = 6.5 * inch
+                drawing_height = 3 * inch
+                drawing = Drawing(drawing_width, drawing_height)
+
+                bc = VerticalBarChart()
+                bc.x = 50
+                bc.y = 20
+                bc.height = drawing_height - 60
+                bc.width = drawing_width - 120
+                bc.data = [counts]
+                bc.strokeColor = colors.black
+                bc.valueAxis.labels.fontSize = 8
+                bc.categoryAxis.labels.boxAnchor = 'ne'
+                bc.categoryAxis.labels.dy = -2
+                bc.categoryAxis.labels.angle = 30
+                bc.categoryAxis.categoryNames = estados
+                bc.bars.fillColor = colors.HexColor('#4f81bd')
+
+                drawing.add(bc)
+
+                # Leyenda con porcentajes
+                start_y = h - 140
+                c.setFont('Helvetica-Bold', 10)
+                c.drawString(40, start_y, 'Postulaciones por estado (cantidad y porcentaje):')
+                c.setFont('Helvetica', 9)
+                y_text = start_y - 14
+                for est, cnt in zip(estados, counts):
+                    pct = (cnt / total) * 100 if total else 0
+                    c.drawString(48, y_text, f"- {est}: {cnt} ({pct:.1f}%)")
+                    y_text -= 12
+
+                # Renderizar el drawing en el canvas
+                renderPDF.draw(drawing, c, 40, h - 420)
+            else:
+                c.setFont('Helvetica-Oblique', 9)
+                c.drawString(40, h - 140, 'No hay postulaciones para esta vacante en el rango solicitado.')
+
+            c.showPage()
+
+        c.save()
+        buffer.seek(0)
+        filename = f"metrics_{vacante_id or 'all'}.pdf"
+        return HttpResponse(buffer.getvalue(), content_type='application/pdf', headers={
+            'Content-Disposition': f'attachment; filename="{filename}"'
+        })
+
+    return Response({'error': 'Formato no soportado. Use format=csv|excel|pdf'}, status=400)
 # ----------------------------
 # Gestion de postulaciones
 # ----------------------------

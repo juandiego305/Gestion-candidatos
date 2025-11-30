@@ -43,6 +43,11 @@ urlpatterns = [
     path("vacantes/<int:id_vacante>/postulaciones/", views.listar_postulaciones_por_vacante, name="listar_postulaciones_por_vacante"), # GET (Ver postulaciones del usuario logueado)
     path('reclutador/postulaciones/<int:postulacion_id>/estado/', actualizar_estado_postulacion),
     path('reclutador/postulaciones/<int:postulacion_id>/contactar/', contactar_candidato),
+     # Métricas (solo admin)
+    path('api/metrics/', views.metrics_dashboard, name='metrics_dashboard'),
+    path('api/metrics/export/', views.export_metrics, name='export_metrics'),
+    # Export por vacante con formato en la ruta para evitar problemas con query params desde clientes
+    path('api/metrics/vacante/<int:vacante_id>/export/<str:fmt>/', views.export_metrics_vacante, name='export_metrics_vacante'),
     
     # Crear entrevista
     path("api/entrevistas/", EntrevistaView.as_view(), name="crear_entrevista"),
