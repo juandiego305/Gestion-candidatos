@@ -143,6 +143,7 @@ class Postulacion(models.Model):
         ("En revisión", "En revisión"),
         ("Rechazado", "Rechazado"),
         ("Entrevista", "Entrevista"),
+        ("Proceso de contratacion", "Proceso de contratacion"),
         ("Contratado", "Contratado"),
     ]
 
