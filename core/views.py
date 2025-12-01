@@ -795,7 +795,85 @@ def postular_vacante(request, vacante_id):
         fecha_postulacion=timezone.now()
     )
 
-    # 10) Respuesta final
+    # 10) Enviar correo de confirmación de postulación
+    try:
+        candidato = request.user
+        empresa = vacante.id_empresa
+        
+        asunto = f"Confirmación de postulación - {vacante.titulo}"
+        mensaje = f"""
+Estimado/a {candidato.first_name or candidato.username},
+
+¡Gracias por postularte! Hemos recibido exitosamente tu postulación para la posición de {vacante.titulo} en {empresa.nombre}.
+
+📋 CONFIRMACIÓN DE TU POSTULACIÓN:
+- Puesto: {vacante.titulo}
+- Empresa: {empresa.nombre}
+- Fecha de postulación: {postulacion.fecha_postulacion.strftime('%d/%m/%Y %H:%M')}
+- Estado: Postulado
+- Modalidad: {vacante.modalidad_trabajo or 'Por definir'}
+- Ubicación: {vacante.ubicacion or 'Por definir'}
+
+📄 DOCUMENTOS RECIBIDOS:
+- CV/Hoja de vida: ✓ Recibido correctamente
+
+✅ ¿QUÉ SIGUE?
+1. Tu postulación será revisada por nuestro equipo de Recursos Humanos
+2. Evaluaremos tu perfil y experiencia en relación con los requisitos del puesto
+3. Si tu perfil es seleccionado, te contactaremos para continuar con el proceso
+4. El tiempo de revisión puede variar entre 3 a 7 días hábiles
+
+📝 REQUISITOS DEL PUESTO:
+{vacante.requisitos[:500] if vacante.requisitos else 'Revisa la descripción completa de la vacante'}
+
+💼 INFORMACIÓN ADICIONAL:
+- Experiencia requerida: {vacante.experiencia or 'Ver descripción del puesto'}
+- Tipo de jornada: {vacante.tipo_jornada or 'Por definir'}
+- Beneficios: {vacante.beneficios if vacante.beneficios else 'Consultar en entrevista'}
+
+💡 RECOMENDACIONES MIENTRAS ESPERAS:
+- Mantén tu correo electrónico y teléfono activos
+- Revisa tu bandeja de entrada y spam regularmente
+- Ten actualizada tu documentación profesional
+- Investiga más sobre {empresa.nombre} y su cultura organizacional
+
+⚠️ IMPORTANTE:
+- No respondas a este correo, es un mensaje automático de confirmación
+- Para consultas, espera a ser contactado por nuestro equipo de RRHH
+- Conserva este correo como comprobante de tu postulación
+
+📊 PRÓXIMAS ACTUALIZACIONES:
+Te notificaremos por correo electrónico sobre cualquier cambio en el estado de tu postulación.
+
+¡Te deseamos mucho éxito en este proceso!
+
+Saludos cordiales,
+Equipo de Recursos Humanos
+{empresa.nombre}
+
+---
+Este es un correo automático generado por el sistema de gestión de candidatos.
+ID de Postulación: {postulacion.id}
+"""
+
+        send_mail(
+            subject=asunto,
+            message=mensaje,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[candidato.email],
+            fail_silently=False,
+        )
+        
+        # Registrar en comentarios que se envió el correo
+        comentario_registro = f"[{timezone.now().isoformat()}] Correo de confirmación 'Postulado' enviado automáticamente a {candidato.email}."
+        postulacion.comentarios = comentario_registro
+        postulacion.save(update_fields=["comentarios"])
+        
+    except Exception as e:
+        logger.error(f"Error al enviar correo de confirmación para postulación {postulacion.id}: {e}")
+        # No fallar la creación de postulación si falla el correo
+
+    # 11) Respuesta final
     return JsonResponse({
         "message": "Postulación registrada correctamente.",
         "postulacion_id": postulacion.id,
@@ -1255,14 +1333,311 @@ def actualizar_estado_postulacion(request, postulacion_id):
     if not nuevo_estado:
         return Response({"error": "Debes enviar el campo 'estado'."}, status=400)
 
-    ESTADOS_VALIDOS = ["Postulado", "En revisión", "Entrevista", "Rechazado", "Contratado"]
+    ESTADOS_VALIDOS = ["Postulado", "En revisión", "Entrevista", "Rechazado", "Proceso de contratacion", "Contratado"]
     if nuevo_estado not in ESTADOS_VALIDOS:
         return Response({
             "error": f"Estado inválido. Usa uno de: {', '.join(ESTADOS_VALIDOS)}"
         }, status=400)
 
+    estado_anterior = postulacion.estado
     postulacion.estado = nuevo_estado
     postulacion.save(update_fields=["estado"])
+
+    # Enviar correo personalizado según el nuevo estado (solo si cambió)
+    if nuevo_estado != estado_anterior:
+        try:
+            candidato = postulacion.candidato
+            vacante = postulacion.vacante
+            empresa = postulacion.empresa
+            
+            logger.info(f"Preparando envío de correo para estado '{nuevo_estado}' a {candidato.email}")
+            
+            asunto = ""
+            mensaje = ""
+            
+            # Correo según el estado
+            if nuevo_estado == "Postulado":
+                asunto = f"Confirmación de postulación - {vacante.titulo}"
+                mensaje = f"""
+Estimado/a {candidato.first_name or candidato.username},
+
+¡Gracias por postularte! Hemos recibido exitosamente tu postulación para la posición de {vacante.titulo} en {empresa.nombre}.
+
+📋 CONFIRMACIÓN DE TU POSTULACIÓN:
+- Puesto: {vacante.titulo}
+- Empresa: {empresa.nombre}
+- Fecha de postulación: {postulacion.fecha_postulacion.strftime('%d/%m/%Y')}
+- Estado: Postulado
+- Modalidad: {vacante.modalidad_trabajo or 'Por definir'}
+- Ubicación: {vacante.ubicacion or 'Por definir'}
+
+📄 DOCUMENTOS RECIBIDOS:
+- CV/Hoja de vida: ✓ Recibido correctamente
+
+✅ ¿QUÉ SIGUE?
+1. Tu postulación será revisada por nuestro equipo de Recursos Humanos
+2. Evaluaremos tu perfil y experiencia en relación con los requisitos del puesto
+3. Si tu perfil es seleccionado, te contactaremos para continuar con el proceso
+4. El tiempo de revisión puede variar entre 3 a 7 días hábiles
+
+📝 REQUISITOS DEL PUESTO:
+{vacante.requisitos[:500] if vacante.requisitos else 'Revisa la descripción completa de la vacante'}
+
+💼 INFORMACIÓN ADICIONAL:
+- Experiencia requerida: {vacante.experiencia or 'Ver descripción del puesto'}
+- Tipo de jornada: {vacante.tipo_jornada or 'Por definir'}
+- Beneficios: {vacante.beneficios if vacante.beneficios else 'Consultar en entrevista'}
+
+💡 RECOMENDACIONES MIENTRAS ESPERAS:
+- Mantén tu correo electrónico y teléfono activos
+- Revisa tu bandeja de entrada y spam regularmente
+- Ten actualizada tu documentación profesional
+- Investiga más sobre {empresa.nombre} y su cultura organizacional
+
+⚠️ IMPORTANTE:
+- No respondas a este correo, es un mensaje automático de confirmación
+- Para consultas, espera a ser contactado por nuestro equipo de RRHH
+- Conserva este correo como comprobante de tu postulación
+
+📊 PRÓXIMAS ACTUALIZACIONES:
+Te notificaremos por correo electrónico sobre cualquier cambio en el estado de tu postulación.
+
+¡Te deseamos mucho éxito en este proceso!
+
+Saludos cordiales,
+Equipo de Recursos Humanos
+{empresa.nombre}
+
+---
+Este es un correo automático generado por el sistema de gestión de candidatos.
+ID de Postulación: {postulacion.id}
+"""
+
+            elif nuevo_estado == "En revisión":
+                asunto = f"Tu postulación está en revisión - {vacante.titulo}"
+                mensaje = f"""
+Estimado/a {candidato.first_name or candidato.username},
+
+Te informamos que tu postulación para la posición de {vacante.titulo} en {empresa.nombre} está siendo revisada por nuestro equipo de Recursos Humanos.
+
+📋 DETALLES DE TU POSTULACIÓN:
+- Puesto: {vacante.titulo}
+- Empresa: {empresa.nombre}
+- Fecha de postulación: {postulacion.fecha_postulacion.strftime('%d/%m/%Y')}
+- Estado actual: En revisión
+
+📝 ¿QUÉ SIGUE?
+Nuestro equipo está evaluando tu perfil y experiencia. Este proceso puede tomar de 3 a 5 días hábiles. Te contactaremos si tu perfil es seleccionado para continuar con el proceso.
+
+💡 RECOMENDACIONES:
+- Mantén tu teléfono y correo electrónico activos
+- Revisa tu bandeja de entrada y spam regularmente
+- Ten disponible tu documentación actualizada
+
+📧 CONTACTO:
+Si tienes alguna pregunta, puedes responder a este correo.
+
+Gracias por tu interés en formar parte de {empresa.nombre}.
+
+Saludos cordiales,
+Equipo de Recursos Humanos
+{empresa.nombre}
+"""
+
+            elif nuevo_estado == "Entrevista":
+                asunto = f"¡Has sido seleccionado para entrevista! - {vacante.titulo}"
+                mensaje = f"""
+Estimado/a {candidato.first_name or candidato.username},
+
+¡Excelentes noticias! Tu perfil ha sido seleccionado y queremos conocerte mejor.
+
+📋 DETALLES DE LA VACANTE:
+- Puesto: {vacante.titulo}
+- Empresa: {empresa.nombre}
+- Modalidad: {vacante.modalidad_trabajo or 'Por definir'}
+
+📅 PRÓXIMOS PASOS:
+Nuestro equipo de Recursos Humanos se pondrá en contacto contigo en las próximas 24-48 horas para coordinar:
+- Fecha y hora de la entrevista
+- Modalidad (presencial, virtual o telefónica)
+- Duración estimada
+- Personas que te entrevistarán
+
+📝 PREPARACIÓN PARA LA ENTREVISTA:
+- Investiga sobre {empresa.nombre} y sus valores
+- Prepara ejemplos de tu experiencia relevante
+- Ten a mano tu CV actualizado
+- Prepara preguntas sobre el puesto y la empresa
+- Asegúrate de tener buena conexión (si es virtual)
+
+💼 DOCUMENTACIÓN SUGERIDA:
+- Copia de tu CV actualizado
+- Portafolio de proyectos (si aplica)
+- Referencias laborales
+
+📧 CONTACTO:
+Si tienes alguna pregunta o necesitas reprogramar, responde a este correo lo antes posible.
+
+¡Te deseamos mucho éxito en tu entrevista!
+
+Saludos cordiales,
+Equipo de Recursos Humanos
+{empresa.nombre}
+"""
+
+            elif nuevo_estado == "Proceso de contratacion":
+                asunto = f"¡Felicitaciones! Has sido seleccionado para {vacante.titulo}"
+                mensaje = f"""
+Estimado/a {candidato.first_name or candidato.username},
+
+¡Tenemos excelentes noticias! Has sido seleccionado/a para la posición de {vacante.titulo} en {empresa.nombre}.
+
+A continuación, los pasos a seguir para completar tu proceso de contratación:
+
+📋 DOCUMENTACIÓN REQUERIDA:
+- Copia de documento de identidad (DPI/Cédula)
+- Hoja de vida actualizada
+- Referencias laborales (mínimo 2)
+- Certificados de estudios
+- Antecedentes penales y policiacos
+- Constancia de afiliación IGSS/Seguro Social (si aplica)
+- Fotografías tamaño cédula (2)
+
+📝 PASOS A SEGUIR:
+1. Reúne toda la documentación listada arriba
+2. Revisa y firma el contrato de trabajo que te será enviado
+3. Completa los formularios de onboarding
+4. Asiste a la sesión de inducción (fecha por confirmar)
+5. Configura tus credenciales de acceso y herramientas
+
+📅 INFORMACIÓN IMPORTANTE:
+- Puesto: {vacante.titulo}
+- Empresa: {empresa.nombre}
+- Modalidad: {vacante.modalidad_trabajo or 'Por definir'}
+- Jornada: {vacante.tipo_jornada or 'Por definir'}
+- Salario: {vacante.salario if vacante.salario else 'Según lo acordado'}
+
+⏰ PLAZO:
+Por favor, envía la documentación requerida en los próximos 5 días hábiles para agilizar tu incorporación.
+
+📧 CONTACTO:
+Para cualquier duda o consulta, responde a este correo o contacta al departamento de Recursos Humanos.
+
+¡Bienvenido/a al equipo de {empresa.nombre}!
+
+Saludos cordiales,
+Equipo de Recursos Humanos
+{empresa.nombre}
+"""
+
+            elif nuevo_estado == "Contratado":
+                asunto = f"¡Bienvenido/a al equipo! - {vacante.titulo} en {empresa.nombre}"
+                mensaje = f"""
+Estimado/a {candidato.first_name or candidato.username},
+
+¡Felicitaciones! Tu proceso de contratación ha sido completado exitosamente.
+
+🎉 BIENVENIDO/A A {empresa.nombre.upper()}
+
+📋 INFORMACIÓN DE TU PUESTO:
+- Posición: {vacante.titulo}
+- Empresa: {empresa.nombre}
+- Modalidad: {vacante.modalidad_trabajo or 'Por definir'}
+- Jornada: {vacante.tipo_jornada or 'Por definir'}
+
+📅 INICIO DE LABORES:
+Nuestro equipo de Recursos Humanos te contactará en las próximas horas para:
+- Confirmar tu fecha de inicio
+- Coordinar la sesión de inducción
+- Entregar credenciales y accesos
+- Presentarte a tu equipo de trabajo
+
+📝 PRIMER DÍA:
+- Programa de inducción corporativa
+- Presentación del equipo
+- Configuración de herramientas de trabajo
+- Entrega de equipos (si aplica)
+- Recorrido por las instalaciones
+
+💼 DOCUMENTACIÓN FINAL:
+Asegúrate de tener lista toda la documentación solicitada para tu primer día.
+
+🎯 PRÓXIMOS PASOS:
+1. Confirma tu disponibilidad de inicio
+2. Completa los formularios de onboarding
+3. Prepara tu documentación
+4. Estate atento a comunicaciones de RRHH
+
+📧 CONTACTO:
+Para cualquier consulta, responde a este correo.
+
+¡Estamos emocionados de tenerte en nuestro equipo!
+
+Saludos cordiales,
+Equipo de Recursos Humanos
+{empresa.nombre}
+"""
+
+            elif nuevo_estado == "Rechazado":
+                asunto = f"Actualización sobre tu postulación - {vacante.titulo}"
+                mensaje = f"""
+Estimado/a {candidato.first_name or candidato.username},
+
+Gracias por tu interés en la posición de {vacante.titulo} en {empresa.nombre} y por el tiempo dedicado en nuestro proceso de selección.
+
+Después de una cuidadosa evaluación, lamentamos informarte que en esta ocasión hemos decidido continuar con otros candidatos cuyo perfil se ajusta más a los requerimientos específicos de esta posición.
+
+📋 RETROALIMENTACIÓN:
+Esta decisión no refleja tu valor profesional ni tus capacidades. El proceso de selección involucra múltiples factores y en ocasiones se basa en necesidades muy específicas del puesto.
+
+🔄 FUTURAS OPORTUNIDADES:
+- Tu perfil permanecerá en nuestra base de datos
+- Te consideraremos para futuras vacantes que se ajusten a tu experiencia
+- Te invitamos a estar atento a nuevas publicaciones en {empresa.nombre}
+- Puedes postularte nuevamente a otras posiciones que sean de tu interés
+
+💡 TE RECOMENDAMOS:
+- Seguir desarrollando tus habilidades profesionales
+- Mantener tu CV actualizado
+- Conectar con nosotros en redes profesionales
+- Participar en capacitaciones de tu área
+
+📧 AGRADECIMIENTO:
+Valoramos sinceramente el tiempo e interés que dedicaste a nuestro proceso de selección.
+
+Te deseamos mucho éxito en tu búsqueda laboral y en tus proyectos futuros.
+
+Saludos cordiales,
+Equipo de Recursos Humanos
+{empresa.nombre}
+"""
+
+            # Enviar el correo si hay contenido
+            if asunto and mensaje:
+                logger.info(f"Enviando correo '{nuevo_estado}' a {candidato.email}")
+                logger.info(f"Asunto: {asunto}")
+                
+                send_mail(
+                    subject=asunto,
+                    message=mensaje,
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[candidato.email],
+                    fail_silently=False,
+                )
+                
+                logger.info(f"✅ Correo '{nuevo_estado}' enviado exitosamente a {candidato.email}")
+                
+                # Registrar en comentarios que se envió el correo
+                comentario_registro = f"\n[{timezone.now().isoformat()}] Correo '{nuevo_estado}' enviado automáticamente a {candidato.email}."
+                postulacion.comentarios = (postulacion.comentarios or "") + comentario_registro
+                postulacion.save(update_fields=["comentarios"])
+            else:
+                logger.warning(f"No se generó contenido de correo para estado '{nuevo_estado}'")
+            
+        except Exception as e:
+            logger.error(f"❌ Error al enviar correo de notificación para postulación {postulacion_id}: {e}")
+            logger.exception("Traceback completo del error:")
+            # No fallar la actualización de estado si falla el correo
 
     return Response({
         "message": "Estado actualizado correctamente",
@@ -1276,13 +1651,13 @@ def actualizar_estado_postulacion(request, postulacion_id):
 @permission_classes([IsAuthenticated])
 def contactar_candidato(request, postulacion_id):
     """
-    Endpoint para que el reclutador (RRHH) o admin contacte a un candidato
-    y quede registro en la postulación (campo comentarios).
+    Endpoint para que el reclutador (RRHH) o admin registre un comentario
+    en la postulación sin enviar correo (los correos se envían automáticamente al cambiar estado).
     URL típica: POST /reclutador/postulaciones/<id>/contactar/
     Body (JSON):
     {
-        "asunto": "Invitación a entrevista",
-        "mensaje": "Hola, hemos revisado tu postulación..."
+        "asunto": "Nota sobre entrevista",
+        "mensaje": "El candidato confirmó disponibilidad..."
     }
     """
 
@@ -1293,7 +1668,7 @@ def contactar_candidato(request, postulacion_id):
 
     if caller_role not in (Roles.ADMIN, Roles.EMPLEADO_RRHH):
         return Response(
-            {'error': 'Solo reclutadores (RRHH) o administradores pueden contactar candidatos.'},
+            {'error': 'Solo reclutadores (RRHH) o administradores pueden registrar notas.'},
             status=403
         )
 
@@ -1315,7 +1690,7 @@ def contactar_candidato(request, postulacion_id):
 
     # 4️⃣ Tomar asunto y mensaje del body
     data = request.data
-    asunto = data.get('asunto') or 'Mensaje sobre tu postulación'
+    asunto = data.get('asunto') or 'Nota interna'
     mensaje = data.get('mensaje')
 
     if not mensaje:
@@ -1324,28 +1699,10 @@ def contactar_candidato(request, postulacion_id):
             status=400
         )
 
-    destinatario = postulacion.candidato.email
-
-    # 5️⃣ Enviar el correo
-    try:
-        send_mail(
-            subject=asunto,
-            message=mensaje,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[destinatario],
-            fail_silently=False,
-        )
-    except Exception as e:
-        print("❌ Error enviando correo:", e)
-        return Response(
-            {'error': f'Error enviando correo: {str(e)}'},
-            status=500
-        )
-
-    # 6️⃣ Guardar comentario en la postulación (historial)
+    # 5️⃣ Guardar comentario en la postulación (historial) sin enviar correo
     marca_tiempo = timezone.now().strftime("%Y-%m-%d %H:%M")
     comentario_nuevo = (
-        f"[{marca_tiempo}] {request.user.email} envió correo al candidato:\n"
+        f"[{marca_tiempo}] {request.user.email} registró nota:\n"
         f"Asunto: {asunto}\n"
         f"Mensaje: {mensaje}\n\n"
     )
@@ -1358,9 +1715,9 @@ def contactar_candidato(request, postulacion_id):
             postulacion.comentarios = comentario_nuevo
         postulacion.save(update_fields=["comentarios"])
 
-    # 7️⃣ Respuesta
+    # 6️⃣ Respuesta
     return Response(
-        {'message': f'Correo enviado a {destinatario}'},
+        {'message': 'Nota registrada correctamente en la postulación'},
         status=200
     )
 
