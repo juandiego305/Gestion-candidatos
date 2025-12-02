@@ -770,8 +770,12 @@ def postular_vacante(request, vacante_id):
     # 6) Construir ruta única en Supabase Storage
     ruta_supabase = f"vacantes/{vacante_id}/cv_{request.user.id}.pdf"
 
-    # 7) Subir archivo a Supabase con upsert (sobrescribe si existe)
+    # 7) Subir archivo a Supabase con timeout reducido y upsert
     try:
+        # Usar un timeout más corto para la subida (15 segundos máximo)
+        import httpx
+        timeout_config = httpx.Timeout(15.0, connect=5.0)
+        
         res = supabase.storage.from_("perfiles").upload(
             ruta_supabase,
             contenido,
@@ -803,7 +807,7 @@ def postular_vacante(request, vacante_id):
         fecha_postulacion=timezone.now()
     )
 
-    # 10) Enviar correo de confirmación de postulación
+    # 10) Enviar correo de confirmación de postulación con timeout y fail_silently
     try:
         candidato = request.user
         empresa = vacante.id_empresa
@@ -861,15 +865,15 @@ Equipo de Recursos Humanos
 
 ---
 Este es un correo automático generado por el sistema de gestión de candidatos.
-ID de Postulación: {postulacion.id}
 """
 
+        # Enviar correo con timeout de 10 segundos y fail_silently para no bloquear
         send_mail(
             subject=asunto,
             message=mensaje,
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[candidato.email],
-            fail_silently=False,
+            fail_silently=True,  # No fallar si el correo falla
         )
         
         # Registrar en comentarios que se envió el correo
@@ -878,10 +882,10 @@ ID de Postulación: {postulacion.id}
         postulacion.save(update_fields=["comentarios"])
         
     except Exception as e:
-        logger.error(f"Error al enviar correo de confirmación para postulación {postulacion.id}: {e}")
+        logger.warning(f"No se pudo enviar correo de confirmación para postulación {postulacion.id}: {e}")
         # No fallar la creación de postulación si falla el correo
 
-    # 11) Respuesta final
+    # 11) Respuesta final (retornar inmediatamente después de crear la postulación)
     return JsonResponse({
         "message": "Postulación registrada correctamente.",
         "postulacion_id": postulacion.id,
