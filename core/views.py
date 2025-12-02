@@ -822,6 +822,9 @@ def postular_vacante(request, vacante_id):
         empresa = postulacion.empresa
         vacante_obj = postulacion.vacante
         
+        print(f"📧 Enviando correo de postulación a {candidato.email}")
+        print(f"📧 EMAIL_HOST_USER configurado: {settings.EMAIL_HOST_USER}")
+        print(f"📧 EMAIL_HOST_PASSWORD configurado: {'Sí' if settings.EMAIL_HOST_PASSWORD else 'NO'}")
         logger.info(f"📧 Enviando correo de postulación a {candidato.email}")
         logger.info(f"📧 EMAIL_HOST_USER configurado: {settings.EMAIL_HOST_USER}")
         logger.info(f"📧 EMAIL_HOST_PASSWORD configurado: {'Sí' if settings.EMAIL_HOST_PASSWORD else 'NO'}")
@@ -865,17 +868,21 @@ ID de Postulación: {postulacion.id}
         )
         
         if resultado > 0:
+            print(f"✅ Correo enviado exitosamente a {candidato.email}")
             logger.info(f"✅ Correo enviado exitosamente a {candidato.email}")
             # Actualizar comentarios
             comentario = f"\n[{timezone.now().isoformat()}] Correo de confirmación enviado a {candidato.email}"
             postulacion.comentarios = (postulacion.comentarios or "") + comentario
             postulacion.save(update_fields=["comentarios"])
         else:
+            print(f"⚠️ send_mail retornó 0 para {candidato.email}")
             logger.warning(f"⚠️ send_mail retornó 0 para {candidato.email}")
             
     except Exception as e:
+        print(f"❌ Error enviando correo para postulación {postulacion.id}: {e}")
         logger.error(f"❌ Error enviando correo para postulación {postulacion.id}: {e}")
         import traceback
+        print(traceback.format_exc())
         logger.error(traceback.format_exc())
         # No fallar la postulación si falla el correo
     
@@ -1363,6 +1370,9 @@ def actualizar_estado_postulacion(request, postulacion_id):
             vacante_obj = postulacion.vacante
             empresa = postulacion.empresa
             
+            print(f"📧 Enviando correo de cambio a '{nuevo_estado}' para {candidato.email}")
+            print(f"📧 EMAIL_HOST_USER configurado: {settings.EMAIL_HOST_USER}")
+            print(f"📧 EMAIL_HOST_PASSWORD configurado: {'Sí' if settings.EMAIL_HOST_PASSWORD else 'NO'}")
             logger.info(f"📧 Enviando correo de cambio a '{nuevo_estado}' para {candidato.email}")
             logger.info(f"📧 EMAIL_HOST_USER configurado: {settings.EMAIL_HOST_USER}")
             logger.info(f"📧 EMAIL_HOST_PASSWORD configurado: {'Sí' if settings.EMAIL_HOST_PASSWORD else 'NO'}")
@@ -1459,19 +1469,24 @@ Saludos,
                 )
                 
                 if resultado > 0:
+                    print(f"✅ Correo '{nuevo_estado}' enviado a {candidato.email}")
                     logger.info(f"✅ Correo '{nuevo_estado}' enviado a {candidato.email}")
                     # Actualizar comentarios
                     comentario = f"\n[{timezone.now().isoformat()}] Correo '{nuevo_estado}' enviado a {candidato.email}"
                     postulacion.comentarios = (postulacion.comentarios or "") + comentario
                     postulacion.save(update_fields=["comentarios"])
                 else:
+                    print(f"⚠️ send_mail retornó 0 para {candidato.email}")
                     logger.warning(f"⚠️ send_mail retornó 0 para {candidato.email}")
             else:
+                print(f"ℹ️ No hay plantilla de correo para estado '{nuevo_estado}'")
                 logger.info(f"ℹ️ No hay plantilla de correo para estado '{nuevo_estado}'")
                 
         except Exception as e:
+            print(f"❌ Error enviando correo de estado '{nuevo_estado}': {e}")
             logger.error(f"❌ Error enviando correo de estado '{nuevo_estado}': {e}")
             import traceback
+            print(traceback.format_exc())
             logger.error(traceback.format_exc())
             # No fallar la actualización si falla el correo
         
