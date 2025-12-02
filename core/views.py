@@ -863,8 +863,7 @@ ID de Postulación: {postulacion.id}
             message=mensaje,
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[candidato.email],
-            fail_silently=False,
-            timeout=10
+            fail_silently=False
         )
         
         if resultado > 0:
@@ -1464,8 +1463,7 @@ Saludos,
                     message=template["mensaje"],
                     from_email=settings.DEFAULT_FROM_EMAIL,
                     recipient_list=[candidato.email],
-                    fail_silently=False,
-                    timeout=10
+                    fail_silently=False
                 )
                 
                 if resultado > 0:
