@@ -1535,15 +1535,15 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         self.user = user
 
         # Buscar el rol en Supabase por email
-        try:
-            sup_user = supabase.table("auth_user").select("role").eq("id", user.id).execute()
-            if sup_user.data:
-                role = sup_user.data[0].get("role", "candidato")
-            else:
-                     role = "candidato"
-        except Exception as e:
-            print(f"⚠️ Error obteniendo rol de Supabase: {e}")
-            role = "candidato"
+ #       try:
+  #          sup_user = supabase.table("auth_user").select("role").eq("id", user.id).execute()
+   #         if sup_user.data:
+    #            role = sup_user.data[0].get("role", "candidato")
+     #       else:
+   #                  role = "candidato"
+    #    except Exception as e:
+     #       print(f"⚠️ Error obteniendo rol de Supabase: {e}")
+      #      role = "candidato"
 
         # Obtener grupos (si los usas)
         groups = [g.name for g in user.groups.all()] if hasattr(user, "groups") else []
