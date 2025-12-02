@@ -89,11 +89,18 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-CORS_ALLOW_ALL_ORIGINS = False  # Solo para desarrollo, no uses en producción
+from corsheaders.defaults import default_headers
+CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_CREDENTIALS = True
-
+CORS_ALLOWED_ORIGINS = [
+    "https://front-talento-h.vercel.app",
+    "https://gestion-candidatos-3.onrender.com"
+]
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'access-control-allow-origin',
+]
 CSRF_TRUSTED_ORIGINS = [
-    "https://front-talento-h.vercel.app/",
+    "https://front-talento-h.vercel.app",
     "https://gestion-candidatos-3.onrender.com"
 ]
 
