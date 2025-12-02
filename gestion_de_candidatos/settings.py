@@ -89,8 +89,13 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-CORS_ALLOW_ALL_ORIGINS = True  # Solo para desarrollo, no uses en producción
+CORS_ALLOW_ALL_ORIGINS = False  # Solo para desarrollo, no uses en producción
 CORS_ALLOW_CREDENTIALS = True
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://front-talento-h.vercel.app/",
+    "https://gestion-candidatos-3.onrender.com"
+]
 
 
 ROOT_URLCONF = 'gestion_de_candidatos.urls'

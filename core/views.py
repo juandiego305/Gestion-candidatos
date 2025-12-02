@@ -764,17 +764,24 @@ def postular_vacante(request, vacante_id):
     if not archivo_cv:
         return Response({"error": "Debe adjuntar un archivo 'cv'."}, status=400)
 
+    # Validar tamaño del archivo (máximo 10MB para evitar timeouts)
+    max_size = 10 * 1024 * 1024  # 10MB en bytes
+    if archivo_cv.size > max_size:
+        return JsonResponse({
+            "error": f"El archivo es demasiado grande ({archivo_cv.size / 1024 / 1024:.1f}MB). Máximo permitido: 10MB"
+        }, status=400)
+
     # Leer bytes del archivo
     contenido = archivo_cv.read()
 
-    # 6) Construir ruta única en Supabase Storage
-    ruta_supabase = f"vacantes/{vacante_id}/cv_{request.user.id}.pdf"
+    # 6) Construir ruta única en Supabase Storage con timestamp para evitar cache issues
+    import time
+    timestamp = int(time.time())
+    ruta_supabase = f"vacantes/{vacante_id}/cv_{request.user.id}_{timestamp}.pdf"
 
     # 7) Subir archivo a Supabase con timeout reducido y upsert
     try:
-        # Usar un timeout más corto para la subida (15 segundos máximo)
-        import httpx
-        timeout_config = httpx.Timeout(15.0, connect=5.0)
+        logger.info(f"Iniciando subida de CV a Supabase: {ruta_supabase} ({archivo_cv.size} bytes)")
         
         res = supabase.storage.from_("perfiles").upload(
             ruta_supabase,
@@ -789,6 +796,8 @@ def postular_vacante(request, vacante_id):
         if res is None or getattr(res, "error", None):
             logger.error(f"Error subiendo CV a Supabase: {getattr(res, 'error', None)}")
             return JsonResponse({"error": "Error subiendo archivo a Supabase"}, status=500)
+        
+        logger.info(f"CV subido exitosamente: {ruta_supabase}")
             
     except Exception as e:
         logger.error(f"Excepción subiendo CV a Supabase: {str(e)}")
@@ -807,13 +816,14 @@ def postular_vacante(request, vacante_id):
         fecha_postulacion=timezone.now()
     )
 
-    # 10) Enviar correo de confirmación de postulación con timeout y fail_silently
-    try:
-        candidato = request.user
-        empresa = vacante.id_empresa
-        
-        asunto = f"Confirmación de postulación - {vacante.titulo}"
-        mensaje = f"""
+    # 10) Enviar correo en un thread separado para NO BLOQUEAR la respuesta HTTP
+    def enviar_correo_background():
+        try:
+            candidato = request.user
+            empresa = vacante.id_empresa
+            
+            asunto = f"Confirmación de postulación - {vacante.titulo}"
+            mensaje = f"""
 Estimado/a {candidato.first_name or candidato.username},
 
 ¡Gracias por postularte! Hemos recibido exitosamente tu postulación para la posición de {vacante.titulo} en {empresa.nombre}.
@@ -867,27 +877,32 @@ Equipo de Recursos Humanos
 Este es un correo automático generado por el sistema de gestión de candidatos.
 """
 
-        # Enviar correo con timeout de 10 segundos y fail_silently para no bloquear
-        send_mail(
-            subject=asunto,
-            message=mensaje,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[candidato.email],
-            fail_silently=True,  # No fallar si el correo falla
-        )
-        
-        # Registrar en comentarios que se envió el correo
-        comentario_registro = f"[{timezone.now().isoformat()}] Correo de confirmación 'Postulado' enviado automáticamente a {candidato.email}."
-        postulacion.comentarios = comentario_registro
-        postulacion.save(update_fields=["comentarios"])
-        
-    except Exception as e:
-        logger.warning(f"No se pudo enviar correo de confirmación para postulación {postulacion.id}: {e}")
-        # No fallar la creación de postulación si falla el correo
+            # Enviar correo (esto ocurre en background, no bloquea la respuesta)
+            send_mail(
+                subject=asunto,
+                message=mensaje,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[candidato.email],
+                fail_silently=True,
+            )
+            
+            # Registrar en comentarios que se envió el correo
+            comentario_registro = f"[{timezone.now().isoformat()}] Correo de confirmación 'Postulado' enviado automáticamente a {candidato.email}."
+            postulacion.comentarios = comentario_registro
+            postulacion.save(update_fields=["comentarios"])
+            
+        except Exception as e:
+            logger.warning(f"No se pudo enviar correo de confirmación para postulación {postulacion.id}: {e}")
 
-    # 11) Respuesta final (retornar inmediatamente después de crear la postulación)
+    # Iniciar thread para enviar correo en background
+    import threading
+    email_thread = threading.Thread(target=enviar_correo_background)
+    email_thread.daemon = True  # El thread se cerrará cuando termine el proceso principal
+    email_thread.start()
+
+    # 11) Respuesta final INMEDIATA (no espera a que se envíe el correo)
     return JsonResponse({
-        "message": "Postulación registrada correctamente.",
+        "message": "Postulación registrada correctamente. Recibirás un correo de confirmación en breve.",
         "postulacion_id": postulacion.id,
         "vacante_id": vacante.id,
         "cv_url": url_final

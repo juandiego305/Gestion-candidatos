@@ -61,6 +61,34 @@ PYTHON_VERSION=3.11.0
 1. ✅ Configurado `timeout = 120` en gunicorn_config.py
 2. ✅ Configurado `graceful_timeout = 120` para shutdown limpio
 3. ✅ Optimizado número de workers según CPU disponible
+4. ✅ **Envío de correos en background threads** - La respuesta HTTP no espera al correo
+5. ✅ Validación de tamaño de archivos (máx 10MB)
+
+### Error 504 en endpoint de postulación (producción)
+
+**Síntomas:**
+- Funciona bien en local
+- En producción da timeout 504
+- Los logs muestran "WORKER TIMEOUT" y "Worker exiting"
+- La postulación se guarda pero no se envía el correo
+
+**Causa raíz:**
+La operación completa (validar + subir archivo + guardar DB + enviar correo) tarda más de 30 segundos en producción debido a:
+- Latencia de red entre Render → Supabase
+- Latencia de red entre Render → Gmail SMTP
+- Recursos limitados en servidores gratuitos
+
+**Solución implementada:**
+1. ✅ **Threading para correos** - El correo se envía en un thread separado
+2. ✅ **Respuesta HTTP inmediata** - Se retorna status 201 apenas se guarda la postulación
+3. ✅ **Validación anticipada** - Se verifica duplicados ANTES de procesar el archivo
+4. ✅ **Logging mejorado** - Para identificar qué operación es lenta
+5. ✅ **Timeout de gunicorn aumentado** - 120s en lugar de 30s por defecto
+
+**Resultado esperado:**
+- ⚡ Respuesta HTTP en < 5 segundos (solo valida + sube archivo + guarda DB)
+- 📧 Correo enviado en background (1-10 segundos después)
+- ✅ No más timeouts 504
 
 ## Verificación Post-Deploy
 
@@ -81,10 +109,13 @@ Para ver los logs en tiempo real:
 ## Optimizaciones Aplicadas
 
 ### En `views.py`:
+- ✅ **Correos en background (threading)** - No bloquean la respuesta HTTP
 - ✅ Validación de postulaciones duplicadas ANTES de procesar archivos
-- ✅ Timeout reducido para subida a Supabase (15s)
+- ✅ Validación de tamaño de archivo (máx 10MB) para evitar timeouts
+- ✅ Timestamp en nombres de archivo para evitar conflictos de caché
 - ✅ `fail_silently=True` en envío de correos
-- ✅ Logging mejorado con `logger.warning` en lugar de `logger.error`
+- ✅ Logging detallado de operaciones de subida
+- ✅ Respuesta HTTP inmediata después de guardar en DB
 
 ### En `gunicorn_config.py`:
 - ✅ Timeout aumentado a 120 segundos
