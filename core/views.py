@@ -755,7 +755,11 @@ def postular_vacante(request, vacante_id):
     if vacante.estado != "Publicado" or fecha_exp < ahora:
         return JsonResponse({"error": "La vacante no está activa."}, status=400)
 
-    # 4) Obtener archivo enviado
+    # 4) Validar si ya está postulado ANTES de procesar el archivo
+    if Postulacion.objects.filter(candidato=request.user, vacante=vacante).exists():
+        return JsonResponse({"error": "Ya se encuentra postulado a esta vacante."}, status=400)
+
+    # 5) Obtener archivo enviado
     archivo_cv = request.FILES.get("cv")
     if not archivo_cv:
         return Response({"error": "Debe adjuntar un archivo 'cv'."}, status=400)
@@ -763,27 +767,31 @@ def postular_vacante(request, vacante_id):
     # Leer bytes del archivo
     contenido = archivo_cv.read()
 
-    # 5) Construir ruta única en Supabase Storage
+    # 6) Construir ruta única en Supabase Storage
     ruta_supabase = f"vacantes/{vacante_id}/cv_{request.user.id}.pdf"
 
-    # 6) Subir archivo a Supabase correctamente
-    res = supabase.storage.from_("perfiles").upload(
-        ruta_supabase,
-        contenido,
-        file_options={"content-type": archivo_cv.content_type}
-    )
+    # 7) Subir archivo a Supabase con upsert (sobrescribe si existe)
+    try:
+        res = supabase.storage.from_("perfiles").upload(
+            ruta_supabase,
+            contenido,
+            file_options={
+                "content-type": archivo_cv.content_type,
+                "upsert": "true"  # Sobrescribir si ya existe
+            }
+        )
 
-    # Validar error del upload
-    if res is None or getattr(res, "error", None):
-        print("❌ Error subiendo a Supabase:", getattr(res, "error", None))
-        return JsonResponse({"error": "Error subiendo archivo a Supabase"}, status=500)
+        # Validar error del upload
+        if res is None or getattr(res, "error", None):
+            logger.error(f"Error subiendo CV a Supabase: {getattr(res, 'error', None)}")
+            return JsonResponse({"error": "Error subiendo archivo a Supabase"}, status=500)
+            
+    except Exception as e:
+        logger.error(f"Excepción subiendo CV a Supabase: {str(e)}")
+        return JsonResponse({"error": f"Error subiendo archivo: {str(e)}"}, status=500)
 
-    # 7) Obtener URL pública
+    # 8) Obtener URL pública
     url_final = supabase.storage.from_("perfiles").get_public_url(ruta_supabase)
-
-    # 8) Validar si ya está postulado
-    if Postulacion.objects.filter(candidato=request.user, vacante=vacante).exists():
-        return JsonResponse({"error": "Ya se encuentra postulado a esta vacante."}, status=400)
 
     # 9) Crear postulación
     postulacion = Postulacion.objects.create(
