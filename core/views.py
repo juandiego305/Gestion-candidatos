@@ -816,21 +816,18 @@ def postular_vacante(request, vacante_id):
         fecha_postulacion=timezone.now()
     )
 
-    # 10) Preparar y enviar correo en thread NO daemon para asegurar que complete
-    def enviar_correo_postulacion():
-        """Envía correo de confirmación en background thread"""
-        import django
-        django.setup()  # Asegurar que Django está configurado en el thread
+    # 10) Enviar correo de forma SÍNCRONA con timeout corto (para garantizar envío en producción)
+    try:
+        candidato = postulacion.candidato
+        empresa = postulacion.empresa
+        vacante_obj = postulacion.vacante
         
-        try:
-            candidato = postulacion.candidato
-            empresa = postulacion.empresa
-            vacante_obj = postulacion.vacante
-            
-            logger.info(f"📧 Thread iniciado: Enviando correo a {candidato.email}")
-            
-            asunto = f"Confirmación de postulación - {vacante_obj.titulo}"
-            mensaje = f"""Estimado/a {candidato.first_name or candidato.username},
+        logger.info(f"📧 Enviando correo de postulación a {candidato.email}")
+        logger.info(f"📧 EMAIL_HOST_USER configurado: {settings.EMAIL_HOST_USER}")
+        logger.info(f"📧 EMAIL_HOST_PASSWORD configurado: {'Sí' if settings.EMAIL_HOST_PASSWORD else 'NO'}")
+        
+        asunto = f"Confirmación de postulación - {vacante_obj.titulo}"
+        mensaje = f"""Estimado/a {candidato.first_name or candidato.username},
 
 ¡Gracias por postularte! Hemos recibido exitosamente tu postulación para la posición de {vacante_obj.titulo} en {empresa.nombre}.
 
@@ -856,40 +853,33 @@ Equipo de Recursos Humanos
 ---
 ID de Postulación: {postulacion.id}
 """
+        
+        from django.core.mail import send_mail
+        resultado = send_mail(
+            subject=asunto,
+            message=mensaje,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[candidato.email],
+            fail_silently=False,
+            timeout=10
+        )
+        
+        if resultado > 0:
+            logger.info(f"✅ Correo enviado exitosamente a {candidato.email}")
+            # Actualizar comentarios
+            comentario = f"\n[{timezone.now().isoformat()}] Correo de confirmación enviado a {candidato.email}"
+            postulacion.comentarios = (postulacion.comentarios or "") + comentario
+            postulacion.save(update_fields=["comentarios"])
+        else:
+            logger.warning(f"⚠️ send_mail retornó 0 para {candidato.email}")
             
-            from django.core.mail import send_mail
-            resultado = send_mail(
-                subject=asunto,
-                message=mensaje,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[candidato.email],
-                fail_silently=False,
-                timeout=20
-            )
-            
-            if resultado > 0:
-                logger.info(f"✅ Correo enviado exitosamente a {candidato.email}")
-                # Actualizar comentarios
-                comentario = f"\n[{timezone.now().isoformat()}] Correo de confirmación enviado a {candidato.email}"
-                from django.db import connection
-                connection.close()  # Cerrar conexión antes de nueva query en thread
-                Postulacion.objects.filter(id=postulacion.id).update(
-                    comentarios=(postulacion.comentarios or "") + comentario
-                )
-            else:
-                logger.warning(f"⚠️ send_mail retornó 0 para {candidato.email}")
-                
-        except Exception as e:
-            logger.error(f"❌ Error en thread de correo para postulación {postulacion.id}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-
-    # Iniciar thread NON-DAEMON (se ejecutará hasta completar)
-    import threading
-    email_thread = threading.Thread(target=enviar_correo_postulacion, daemon=False)
-    email_thread.start()
+    except Exception as e:
+        logger.error(f"❌ Error enviando correo para postulación {postulacion.id}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        # No fallar la postulación si falla el correo
     
-    logger.info(f"✅ Postulación {postulacion.id} creada. Correo enviándose en background.")
+    logger.info(f"✅ Postulación {postulacion.id} creada exitosamente")
 
     # 11) Respuesta final INMEDIATA
     return JsonResponse({
@@ -1361,25 +1351,27 @@ def actualizar_estado_postulacion(request, postulacion_id):
     postulacion.estado = nuevo_estado
     postulacion.save(update_fields=["estado"])
 
-    # Enviar correo según el nuevo estado (en background thread)
+    # Enviar correo según el nuevo estado (SÍNCRONO para garantizar envío en producción)
     if nuevo_estado != estado_anterior:
-        def enviar_correo_cambio_estado():
-            """Envía correo de notificación de cambio de estado en background"""
-            import django
-            django.setup()
+        # Registrar cambio primero
+        comentario_cambio = f"\n[{timezone.now().isoformat()}] Estado cambiado: '{estado_anterior}' → '{nuevo_estado}' por {request.user.email}"
+        postulacion.comentarios = (postulacion.comentarios or "") + comentario_cambio
+        postulacion.save(update_fields=["comentarios"])
+        
+        try:
+            candidato = postulacion.candidato
+            vacante_obj = postulacion.vacante
+            empresa = postulacion.empresa
             
-            try:
-                candidato = postulacion.candidato
-                vacante_obj = postulacion.vacante
-                empresa = postulacion.empresa
-                
-                logger.info(f"📧 Enviando correo de cambio a '{nuevo_estado}' para {candidato.email}")
-                
-                # Plantillas de correo según estado
-                templates = {
-                    "En revisión": {
-                        "asunto": f"Tu postulación está en revisión - {vacante_obj.titulo}",
-                        "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
+            logger.info(f"📧 Enviando correo de cambio a '{nuevo_estado}' para {candidato.email}")
+            logger.info(f"📧 EMAIL_HOST_USER configurado: {settings.EMAIL_HOST_USER}")
+            logger.info(f"📧 EMAIL_HOST_PASSWORD configurado: {'Sí' if settings.EMAIL_HOST_PASSWORD else 'NO'}")
+            
+            # Plantillas de correo según estado
+            templates = {
+                "En revisión": {
+                    "asunto": f"Tu postulación está en revisión - {vacante_obj.titulo}",
+                    "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
 
 Tu postulación para {vacante_obj.titulo} en {empresa.nombre} está siendo revisada por nuestro equipo.
 
@@ -1390,10 +1382,10 @@ Te contactaremos si tu perfil es seleccionado.
 
 Saludos,
 {empresa.nombre}"""
-                    },
-                    "Entrevista": {
-                        "asunto": f"¡Has sido seleccionado para entrevista! - {vacante_obj.titulo}",
-                        "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
+                },
+                "Entrevista": {
+                    "asunto": f"¡Has sido seleccionado para entrevista! - {vacante_obj.titulo}",
+                    "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
 
 ¡Excelentes noticias! Has sido seleccionado/a para una entrevista.
 
@@ -1404,10 +1396,10 @@ Nuestro equipo te contactará en las próximas 24-48 horas para coordinar la ent
 
 ¡Mucho éxito!
 {empresa.nombre}"""
-                    },
-                    "Proceso de contratacion": {
-                        "asunto": f"¡Felicitaciones! - Proceso de contratación {vacante_obj.titulo}",
-                        "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
+                },
+                "Proceso de contratacion": {
+                    "asunto": f"¡Felicitaciones! - Proceso de contratación {vacante_obj.titulo}",
+                    "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
 
 ¡Has sido seleccionado/a para {vacante_obj.titulo}!
 
@@ -1421,10 +1413,10 @@ Te contactaremos con los próximos pasos.
 
 ¡Bienvenido/a!
 {empresa.nombre}"""
-                    },
-                    "Contratado": {
-                        "asunto": f"¡Bienvenido/a al equipo! - {empresa.nombre}",
-                        "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
+                },
+                "Contratado": {
+                    "asunto": f"¡Bienvenido/a al equipo! - {empresa.nombre}",
+                    "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
 
 ¡Felicitaciones! Tu contratación ha sido completada.
 
@@ -1435,10 +1427,10 @@ Nuestro equipo te contactará para coordinar tu fecha de inicio e inducción.
 ¡Estamos emocionados de tenerte con nosotros!
 
 {empresa.nombre}"""
-                    },
-                    "Rechazado": {
-                        "asunto": f"Actualización sobre tu postulación - {vacante_obj.titulo}",
-                        "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
+                },
+                "Rechazado": {
+                    "asunto": f"Actualización sobre tu postulación - {vacante_obj.titulo}",
+                    "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
 
 Gracias por tu interés en {vacante_obj.titulo} en {empresa.nombre}.
 
@@ -1450,52 +1442,40 @@ Te deseamos mucho éxito en tu búsqueda laboral.
 
 Saludos,
 {empresa.nombre}"""
-                    }
                 }
+            }
+            
+            template = templates.get(nuevo_estado)
+            
+            if template:
+                from django.core.mail import send_mail
+                resultado = send_mail(
+                    subject=template["asunto"],
+                    message=template["mensaje"],
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[candidato.email],
+                    fail_silently=False,
+                    timeout=10
+                )
                 
-                template = templates.get(nuevo_estado)
-                
-                if template:
-                    from django.core.mail import send_mail
-                    resultado = send_mail(
-                        subject=template["asunto"],
-                        message=template["mensaje"],
-                        from_email=settings.DEFAULT_FROM_EMAIL,
-                        recipient_list=[candidato.email],
-                        fail_silently=False,
-                        timeout=20
-                    )
-                    
-                    if resultado > 0:
-                        logger.info(f"✅ Correo '{nuevo_estado}' enviado a {candidato.email}")
-                        # Actualizar comentarios
-                        comentario = f"\n[{timezone.now().isoformat()}] Correo '{nuevo_estado}' enviado a {candidato.email}"
-                        from django.db import connection
-                        connection.close()
-                        Postulacion.objects.filter(id=postulacion.id).update(
-                            comentarios=(postulacion.comentarios or "") + comentario
-                        )
-                    else:
-                        logger.warning(f"⚠️ send_mail retornó 0 para {candidato.email}")
+                if resultado > 0:
+                    logger.info(f"✅ Correo '{nuevo_estado}' enviado a {candidato.email}")
+                    # Actualizar comentarios
+                    comentario = f"\n[{timezone.now().isoformat()}] Correo '{nuevo_estado}' enviado a {candidato.email}"
+                    postulacion.comentarios = (postulacion.comentarios or "") + comentario
+                    postulacion.save(update_fields=["comentarios"])
                 else:
-                    logger.info(f"ℹ️ No hay plantilla de correo para estado '{nuevo_estado}'")
-                    
-            except Exception as e:
-                logger.error(f"❌ Error enviando correo de estado '{nuevo_estado}': {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-
-        # Registrar cambio y lanzar thread
-        comentario_cambio = f"\n[{timezone.now().isoformat()}] Estado cambiado: '{estado_anterior}' → '{nuevo_estado}' por {request.user.email}"
-        postulacion.comentarios = (postulacion.comentarios or "") + comentario_cambio
-        postulacion.save(update_fields=["comentarios"])
+                    logger.warning(f"⚠️ send_mail retornó 0 para {candidato.email}")
+            else:
+                logger.info(f"ℹ️ No hay plantilla de correo para estado '{nuevo_estado}'")
+                
+        except Exception as e:
+            logger.error(f"❌ Error enviando correo de estado '{nuevo_estado}': {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # No fallar la actualización si falla el correo
         
-        # Thread NON-DAEMON
-        import threading
-        email_thread = threading.Thread(target=enviar_correo_cambio_estado, daemon=False)
-        email_thread.start()
-        
-        logger.info(f"✅ Estado actualizado: {estado_anterior} → {nuevo_estado}. Correo enviándose...")
+        logger.info(f"✅ Estado actualizado: {estado_anterior} → {nuevo_estado}")
 
     return Response({
         "message": "Estado actualizado correctamente. El candidato recibirá una notificación por correo.",
