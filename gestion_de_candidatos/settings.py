@@ -35,7 +35,7 @@ SECRET_KEY = 'django-insecure-ud!hdb+@vw&y^omt70y6wzrma%e)#px4f#sf03ja!zfbh10f@t
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["*"]
 
 
 # Application definition
@@ -89,9 +89,16 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-CORS_ALLOW_ALL_ORIGINS = True  # Solo para desarrollo, no uses en producción
+CORS_ALLOW_ALL_ORIGINS = False  # Solo para desarrollo, no uses en producción
 CORS_ALLOW_CREDENTIALS = True
 
+
+CORS_ALLOW_HEADERS =  [
+    "https://front-talento-h.vercel.app"
+]
+CSRF_TRUSTED_ORIGINS = [
+    "https://front-talento-h.vercel.app"
+]
 
 ROOT_URLCONF = 'gestion_de_candidatos.urls'
 
@@ -112,22 +119,25 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'gestion_de_candidatos.wsgi.application'
 
+STATIC_URL = "/static/"
+STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
+
 
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
 
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'postgres',  # Base de datos por defecto en Supabase
-        'USER': 'postgres.fkpjhyjcexhhbljexrbb',  # Tu usuario completo
-        'PASSWORD': '4sLsg873jktoN3vn',  # Tu contraseña
-        'HOST': 'aws-1-us-east-2.pooler.supabase.com',  # Host correcto de Supabase
-        'PORT': 5432,  # Puerto correcto
-    }
-}
+#DATABASES = {
+ #   'default': {
+ #       'ENGINE': 'django.db.backends.postgresql',
+  #      'NAME': 'postgres',  # Base de datos por defecto en Supabase
+   #     'USER': 'postgres.fkpjhyjcexhhbljexrbb',  # Tu usuario completo
+    #    'PASSWORD': '4sLsg873jktoN3vn',  # Tu contraseña
+     #   'HOST': 'aws-1-us-east-2.pooler.supabase.com',  # Host correcto de Supabase
+      #  'PORT': 5432,  # Puerto correcto
+   # }
+#}
 
 
 # Password validation
