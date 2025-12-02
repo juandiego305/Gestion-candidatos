@@ -89,10 +89,12 @@ La operación completa (validar + subir archivo + guardar DB + enviar correo) ta
 5. ✅ **Timeout de gunicorn aumentado** - 120s en lugar de 30s por defecto
 
 **Resultado esperado:**
-- ⚡ Respuesta HTTP en < 10 segundos (valida + sube archivo + guarda DB + intenta enviar correo)
-- 📧 Correo enviado durante la request (con timeout de 15s)
-- ✅ No más timeouts 504
+- ⚡ Respuesta HTTP en < 5 segundos (valida + sube archivo + guarda DB + lanza thread)
+- 📧 Correo enviado en background (5-20 segundos después, sin bloquear HTTP)
+- ✅ No más timeouts 504/502
+- ✅ Los correos SE ENVÍAN correctamente en producción
 - ✅ Si el correo falla, la postulación igual se guarda
+- ✅ Threads NON-DAEMON garantizan que el correo se complete
 
 ### Correos no se envían en producción (pero funcionan en local)
 
@@ -167,13 +169,16 @@ Para ver los logs en tiempo real:
 ## Optimizaciones Aplicadas
 
 ### En `views.py`:
-- ✅ **Correos en background (threading)** - No bloquean la respuesta HTTP
+- ✅ **Correos en background con threads NON-DAEMON** - No bloquean respuesta HTTP y garantizan completar
+- ✅ **Timeout de 20s en SMTP** - Evita bloqueos infinitos
+- ✅ **Django setup en threads** - Asegura configuración correcta en background
+- ✅ **Plantillas de correo optimizadas** - Mensajes cortos y directos
 - ✅ Validación de postulaciones duplicadas ANTES de procesar archivos
 - ✅ Validación de tamaño de archivo (máx 10MB) para evitar timeouts
 - ✅ Timestamp en nombres de archivo para evitar conflictos de caché
-- ✅ `fail_silently=True` en envío de correos
-- ✅ Logging detallado de operaciones de subida
+- ✅ Logging detallado de operaciones (envío, threads, errores)
 - ✅ Respuesta HTTP inmediata después de guardar en DB
+- ✅ Cierre de conexión DB antes de queries en threads
 
 ### En `gunicorn_config.py`:
 - ✅ Timeout aumentado a 120 segundos

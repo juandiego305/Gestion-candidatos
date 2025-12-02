@@ -1,5 +1,4 @@
 # core/views.py
-import os
 from django.http import HttpResponse
 from django.contrib.auth import get_user_model
 from rest_framework import viewsets, permissions, status
@@ -51,93 +50,6 @@ from io import BytesIO
 logger = logging.getLogger(__name__)
 
 
-# ===== FUNCIÓN HELPER PARA ENVÍO DE CORREOS =====
-def enviar_correo_con_fallback(asunto, mensaje, destinatario, postulacion_id=None):
-    """
-    Intenta enviar correo por SMTP (para local) y si falla usa SendGrid (para producción).
-    Retorna True si se envió exitosamente, False si falló.
-    """
-    import threading
-    
-    def _enviar():
-        correo_enviado = False
-        metodo_usado = None
-        
-        # Método 1: Intentar SMTP tradicional (funciona en local)
-        try:
-            logger.info(f"📧 [SMTP] Intentando enviar correo a {destinatario}: {asunto}")
-            
-            resultado = send_mail(
-                subject=asunto,
-                message=mensaje,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[destinatario],
-                fail_silently=False,
-                timeout=10  # Timeout corto para fallar rápido
-            )
-            
-            if resultado > 0:
-                correo_enviado = True
-                metodo_usado = "SMTP"
-                logger.info(f"✅ [SMTP] Correo enviado exitosamente a {destinatario}")
-            
-        except Exception as e:
-            logger.warning(f"⚠️ [SMTP] Falló (esperado en producción): {str(e)}")
-            
-            # Método 2: Intentar SendGrid como fallback
-            try:
-                logger.info(f"📧 [SendGrid] Intentando enviar correo a {destinatario}")
-                
-                from sendgrid import SendGridAPIClient
-                from sendgrid.helpers.mail import Mail
-                
-                sendgrid_api_key = os.getenv('SENDGRID_API_KEY')
-                
-                if not sendgrid_api_key:
-                    logger.error("❌ [SendGrid] SENDGRID_API_KEY no configurada")
-                    return
-                
-                message = Mail(
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    to_emails=destinatario,
-                    subject=asunto,
-                    plain_text_content=mensaje
-                )
-                
-                sg = SendGridAPIClient(sendgrid_api_key)
-                response = sg.send(message)
-                
-                if response.status_code in [200, 201, 202]:
-                    correo_enviado = True
-                    metodo_usado = "SendGrid"
-                    logger.info(f"✅ [SendGrid] Correo enviado exitosamente a {destinatario} (status: {response.status_code})")
-                else:
-                    logger.error(f"❌ [SendGrid] Status inesperado: {response.status_code}")
-                    
-            except Exception as e2:
-                logger.error(f"❌ [SendGrid] Error: {str(e2)}", exc_info=True)
-        
-        # Registrar en comentarios de postulación
-        if correo_enviado and postulacion_id:
-            try:
-                from .models import Postulacion
-                postulacion = Postulacion.objects.get(id=postulacion_id)
-                comentario = f"[{timezone.now().isoformat()}] Correo '{asunto}' enviado a {destinatario} via {metodo_usado}."
-                if postulacion.comentarios:
-                    postulacion.comentarios += f"\n{comentario}"
-                else:
-                    postulacion.comentarios = comentario
-                postulacion.save(update_fields=["comentarios"])
-                logger.info(f"📝 Comentario registrado en postulación {postulacion_id}")
-            except Exception as e:
-                logger.warning(f"No se pudo registrar el envío en comentarios: {e}")
-        
-        return correo_enviado
-    
-    # Ejecutar en thread para no bloquear
-    thread = threading.Thread(target=_enviar, daemon=False)
-    thread.start()
-    logger.info(f"🚀 Thread de correo iniciado para {destinatario}")
 
 
 supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
@@ -904,70 +816,82 @@ def postular_vacante(request, vacante_id):
         fecha_postulacion=timezone.now()
     )
 
-    # 10) Enviar correo de confirmación (SMTP local / SendGrid producción)
-    candidato = request.user
-    empresa = vacante.id_empresa
-    
-    asunto = f"Confirmación de postulación - {vacante.titulo}"
-    mensaje = f"""
-Estimado/a {candidato.first_name or candidato.username},
+    # 10) Preparar y enviar correo en thread NO daemon para asegurar que complete
+    def enviar_correo_postulacion():
+        """Envía correo de confirmación en background thread"""
+        import django
+        django.setup()  # Asegurar que Django está configurado en el thread
+        
+        try:
+            candidato = postulacion.candidato
+            empresa = postulacion.empresa
+            vacante_obj = postulacion.vacante
+            
+            logger.info(f"📧 Thread iniciado: Enviando correo a {candidato.email}")
+            
+            asunto = f"Confirmación de postulación - {vacante_obj.titulo}"
+            mensaje = f"""Estimado/a {candidato.first_name or candidato.username},
 
-¡Gracias por postularte! Hemos recibido exitosamente tu postulación para la posición de {vacante.titulo} en {empresa.nombre}.
+¡Gracias por postularte! Hemos recibido exitosamente tu postulación para la posición de {vacante_obj.titulo} en {empresa.nombre}.
 
 📋 CONFIRMACIÓN DE TU POSTULACIÓN:
-- Puesto: {vacante.titulo}
+- Puesto: {vacante_obj.titulo}
 - Empresa: {empresa.nombre}
-- Fecha de postulación: {postulacion.fecha_postulacion.strftime('%d/%m/%Y %H:%M')}
+- Fecha: {postulacion.fecha_postulacion.strftime('%d/%m/%Y %H:%M')}
 - Estado: Postulado
-- Modalidad: {vacante.modalidad_trabajo or 'Por definir'}
-- Ubicación: {vacante.ubicacion or 'Por definir'}
-
-📄 DOCUMENTOS RECIBIDOS:
-- CV/Hoja de vida: ✓ Recibido correctamente
+- Modalidad: {vacante_obj.modalidad_trabajo or 'Por definir'}
+- Ubicación: {vacante_obj.ubicacion or 'Por definir'}
 
 ✅ ¿QUÉ SIGUE?
-1. Tu postulación será revisada por nuestro equipo de Recursos Humanos
-2. Evaluaremos tu perfil y experiencia en relación con los requisitos del puesto
-3. Si tu perfil es seleccionado, te contactaremos para continuar con el proceso
-4. El tiempo de revisión puede variar entre 3 a 7 días hábiles
+Tu postulación será revisada por nuestro equipo de Recursos Humanos en los próximos 3-7 días hábiles.
 
-📝 REQUISITOS DEL PUESTO:
-{vacante.requisitos[:500] if vacante.requisitos else 'Revisa la descripción completa de la vacante'}
+📧 Mantén tu correo y teléfono activos para recibir actualizaciones.
 
-💼 INFORMACIÓN ADICIONAL:
-- Experiencia requerida: {vacante.experiencia or 'Ver descripción del puesto'}
-- Tipo de jornada: {vacante.tipo_jornada or 'Por definir'}
-- Beneficios: {vacante.beneficios if vacante.beneficios else 'Consultar en entrevista'}
-
-💡 RECOMENDACIONES MIENTRAS ESPERAS:
-- Mantén tu correo electrónico y teléfono activos
-- Revisa tu bandeja de entrada y spam regularmente
-- Ten actualizada tu documentación profesional
-- Investiga más sobre {empresa.nombre} y su cultura organizacional
-
-⚠️ IMPORTANTE:
-- No respondas a este correo, es un mensaje automático de confirmación
-- Para consultas, espera a ser contactado por nuestro equipo de RRHH
-- Conserva este correo como comprobante de tu postulación
-
-📊 PRÓXIMAS ACTUALIZACIONES:
-Te notificaremos por correo electrónico sobre cualquier cambio en el estado de tu postulación.
-
-¡Te deseamos mucho éxito en este proceso!
+¡Te deseamos mucho éxito!
 
 Saludos cordiales,
 Equipo de Recursos Humanos
 {empresa.nombre}
 
 ---
-Este es un correo automático generado por el sistema de gestión de candidatos.
 ID de Postulación: {postulacion.id}
 """
+            
+            from django.core.mail import send_mail
+            resultado = send_mail(
+                subject=asunto,
+                message=mensaje,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[candidato.email],
+                fail_silently=False,
+                timeout=20
+            )
+            
+            if resultado > 0:
+                logger.info(f"✅ Correo enviado exitosamente a {candidato.email}")
+                # Actualizar comentarios
+                comentario = f"\n[{timezone.now().isoformat()}] Correo de confirmación enviado a {candidato.email}"
+                from django.db import connection
+                connection.close()  # Cerrar conexión antes de nueva query en thread
+                Postulacion.objects.filter(id=postulacion.id).update(
+                    comentarios=(postulacion.comentarios or "") + comentario
+                )
+            else:
+                logger.warning(f"⚠️ send_mail retornó 0 para {candidato.email}")
+                
+        except Exception as e:
+            logger.error(f"❌ Error en thread de correo para postulación {postulacion.id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
-    # Enviar correo en background (intenta SMTP, fallback a SendGrid)
-    enviar_correo_con_fallback(asunto, mensaje, candidato.email, postulacion.id)
+    # Iniciar thread NON-DAEMON (se ejecutará hasta completar)
+    import threading
+    email_thread = threading.Thread(target=enviar_correo_postulacion, daemon=False)
+    email_thread.start()
+    
+    logger.info(f"✅ Postulación {postulacion.id} creada. Correo enviándose en background.")
 
-    # 11) Respuesta INMEDIATA (no espera al correo)
+    # 11) Respuesta final INMEDIATA
     return JsonResponse({
         "message": "Postulación registrada correctamente. Recibirás un correo de confirmación en breve.",
         "postulacion_id": postulacion.id,
@@ -1437,292 +1361,837 @@ def actualizar_estado_postulacion(request, postulacion_id):
     postulacion.estado = nuevo_estado
     postulacion.save(update_fields=["estado"])
 
-    # Enviar correo personalizado según el nuevo estado (solo si cambió)
+    # Enviar correo según el nuevo estado (en background thread)
     if nuevo_estado != estado_anterior:
-        try:
-            candidato = postulacion.candidato
-            vacante = postulacion.vacante
-            empresa = postulacion.empresa
+        def enviar_correo_cambio_estado():
+            """Envía correo de notificación de cambio de estado en background"""
+            import django
+            django.setup()
             
-            logger.info(f"Preparando envío de correo para estado '{nuevo_estado}' a {candidato.email}")
-            
-            asunto = ""
-            mensaje = ""
-            
-            # Correo según el estado
-            if nuevo_estado == "Postulado":
-                asunto = f"Confirmación de postulación - {vacante.titulo}"
-                mensaje = f"""
-Estimado/a {candidato.first_name or candidato.username},
+            try:
+                candidato = postulacion.candidato
+                vacante_obj = postulacion.vacante
+                empresa = postulacion.empresa
+                
+                logger.info(f"📧 Enviando correo de cambio a '{nuevo_estado}' para {candidato.email}")
+                
+                # Plantillas de correo según estado
+                templates = {
+                    "En revisión": {
+                        "asunto": f"Tu postulación está en revisión - {vacante_obj.titulo}",
+                        "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
 
-¡Gracias por postularte! Hemos recibido exitosamente tu postulación para la posición de {vacante.titulo} en {empresa.nombre}.
+Tu postulación para {vacante_obj.titulo} en {empresa.nombre} está siendo revisada por nuestro equipo.
 
-📋 CONFIRMACIÓN DE TU POSTULACIÓN:
-- Puesto: {vacante.titulo}
-- Empresa: {empresa.nombre}
-- Fecha de postulación: {postulacion.fecha_postulacion.strftime('%d/%m/%Y')}
-- Estado: Postulado
-- Modalidad: {vacante.modalidad_trabajo or 'Por definir'}
-- Ubicación: {vacante.ubicacion or 'Por definir'}
+📋 Estado: En revisión
+⏰ Tiempo estimado: 3-5 días hábiles
 
-📄 DOCUMENTOS RECIBIDOS:
-- CV/Hoja de vida: ✓ Recibido correctamente
+Te contactaremos si tu perfil es seleccionado.
 
-✅ ¿QUÉ SIGUE?
-1. Tu postulación será revisada por nuestro equipo de Recursos Humanos
-2. Evaluaremos tu perfil y experiencia en relación con los requisitos del puesto
-3. Si tu perfil es seleccionado, te contactaremos para continuar con el proceso
-4. El tiempo de revisión puede variar entre 3 a 7 días hábiles
+Saludos,
+{empresa.nombre}"""
+                    },
+                    "Entrevista": {
+                        "asunto": f"¡Has sido seleccionado para entrevista! - {vacante_obj.titulo}",
+                        "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
 
-📝 REQUISITOS DEL PUESTO:
-{vacante.requisitos[:500] if vacante.requisitos else 'Revisa la descripción completa de la vacante'}
+¡Excelentes noticias! Has sido seleccionado/a para una entrevista.
 
-💼 INFORMACIÓN ADICIONAL:
-- Experiencia requerida: {vacante.experiencia or 'Ver descripción del puesto'}
-- Tipo de jornada: {vacante.tipo_jornada or 'Por definir'}
-- Beneficios: {vacante.beneficios if vacante.beneficios else 'Consultar en entrevista'}
+📋 Puesto: {vacante_obj.titulo}
+🏢 Empresa: {empresa.nombre}
 
-💡 RECOMENDACIONES MIENTRAS ESPERAS:
-- Mantén tu correo electrónico y teléfono activos
-- Revisa tu bandeja de entrada y spam regularmente
-- Ten actualizada tu documentación profesional
-- Investiga más sobre {empresa.nombre} y su cultura organizacional
+Nuestro equipo te contactará en las próximas 24-48 horas para coordinar la entrevista.
 
-⚠️ IMPORTANTE:
-- No respondas a este correo, es un mensaje automático de confirmación
-- Para consultas, espera a ser contactado por nuestro equipo de RRHH
-- Conserva este correo como comprobante de tu postulación
+¡Mucho éxito!
+{empresa.nombre}"""
+                    },
+                    "Proceso de contratacion": {
+                        "asunto": f"¡Felicitaciones! - Proceso de contratación {vacante_obj.titulo}",
+                        "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
 
-📊 PRÓXIMAS ACTUALIZACIONES:
-Te notificaremos por correo electrónico sobre cualquier cambio en el estado de tu postulación.
+¡Has sido seleccionado/a para {vacante_obj.titulo}!
 
-¡Te deseamos mucho éxito en este proceso!
-
-Saludos cordiales,
-Equipo de Recursos Humanos
-{empresa.nombre}
-
----
-Este es un correo automático generado por el sistema de gestión de candidatos.
-ID de Postulación: {postulacion.id}
-"""
-
-            elif nuevo_estado == "En revisión":
-                asunto = f"Tu postulación está en revisión - {vacante.titulo}"
-                mensaje = f"""
-Estimado/a {candidato.first_name or candidato.username},
-
-Te informamos que tu postulación para la posición de {vacante.titulo} en {empresa.nombre} está siendo revisada por nuestro equipo de Recursos Humanos.
-
-📋 DETALLES DE TU POSTULACIÓN:
-- Puesto: {vacante.titulo}
-- Empresa: {empresa.nombre}
-- Fecha de postulación: {postulacion.fecha_postulacion.strftime('%d/%m/%Y')}
-- Estado actual: En revisión
-
-📝 ¿QUÉ SIGUE?
-Nuestro equipo está evaluando tu perfil y experiencia. Este proceso puede tomar de 3 a 5 días hábiles. Te contactaremos si tu perfil es seleccionado para continuar con el proceso.
-
-💡 RECOMENDACIONES:
-- Mantén tu teléfono y correo electrónico activos
-- Revisa tu bandeja de entrada y spam regularmente
-- Ten disponible tu documentación actualizada
-
-📧 CONTACTO:
-Si tienes alguna pregunta, puedes responder a este correo.
-
-Gracias por tu interés en formar parte de {empresa.nombre}.
-
-Saludos cordiales,
-Equipo de Recursos Humanos
-{empresa.nombre}
-"""
-
-            elif nuevo_estado == "Entrevista":
-                asunto = f"¡Has sido seleccionado para entrevista! - {vacante.titulo}"
-                mensaje = f"""
-Estimado/a {candidato.first_name or candidato.username},
-
-¡Excelentes noticias! Tu perfil ha sido seleccionado y queremos conocerte mejor.
-
-📋 DETALLES DE LA VACANTE:
-- Puesto: {vacante.titulo}
-- Empresa: {empresa.nombre}
-- Modalidad: {vacante.modalidad_trabajo or 'Por definir'}
-
-📅 PRÓXIMOS PASOS:
-Nuestro equipo de Recursos Humanos se pondrá en contacto contigo en las próximas 24-48 horas para coordinar:
-- Fecha y hora de la entrevista
-- Modalidad (presencial, virtual o telefónica)
-- Duración estimada
-- Personas que te entrevistarán
-
-📝 PREPARACIÓN PARA LA ENTREVISTA:
-- Investiga sobre {empresa.nombre} y sus valores
-- Prepara ejemplos de tu experiencia relevante
-- Ten a mano tu CV actualizado
-- Prepara preguntas sobre el puesto y la empresa
-- Asegúrate de tener buena conexión (si es virtual)
-
-💼 DOCUMENTACIÓN SUGERIDA:
-- Copia de tu CV actualizado
-- Portafolio de proyectos (si aplica)
-- Referencias laborales
-
-📧 CONTACTO:
-Si tienes alguna pregunta o necesitas reprogramar, responde a este correo lo antes posible.
-
-¡Te deseamos mucho éxito en tu entrevista!
-
-Saludos cordiales,
-Equipo de Recursos Humanos
-{empresa.nombre}
-"""
-
-            elif nuevo_estado == "Proceso de contratacion":
-                asunto = f"¡Felicitaciones! Has sido seleccionado para {vacante.titulo}"
-                mensaje = f"""
-Estimado/a {candidato.first_name or candidato.username},
-
-¡Tenemos excelentes noticias! Has sido seleccionado/a para la posición de {vacante.titulo} en {empresa.nombre}.
-
-A continuación, los pasos a seguir para completar tu proceso de contratación:
-
-📋 DOCUMENTACIÓN REQUERIDA:
-- Copia de documento de identidad (DPI/Cédula)
+Iniciaremos el proceso de contratación. Por favor, prepara la siguiente documentación:
+- Documento de identidad
 - Hoja de vida actualizada
-- Referencias laborales (mínimo 2)
+- Referencias laborales
 - Certificados de estudios
-- Antecedentes penales y policiacos
-- Constancia de afiliación IGSS/Seguro Social (si aplica)
-- Fotografías tamaño cédula (2)
 
-📝 PASOS A SEGUIR:
-1. Reúne toda la documentación listada arriba
-2. Revisa y firma el contrato de trabajo que te será enviado
-3. Completa los formularios de onboarding
-4. Asiste a la sesión de inducción (fecha por confirmar)
-5. Configura tus credenciales de acceso y herramientas
+Te contactaremos con los próximos pasos.
 
-📅 INFORMACIÓN IMPORTANTE:
-- Puesto: {vacante.titulo}
-- Empresa: {empresa.nombre}
-- Modalidad: {vacante.modalidad_trabajo or 'Por definir'}
-- Jornada: {vacante.tipo_jornada or 'Por definir'}
-- Salario: {vacante.salario if vacante.salario else 'Según lo acordado'}
+¡Bienvenido/a!
+{empresa.nombre}"""
+                    },
+                    "Contratado": {
+                        "asunto": f"¡Bienvenido/a al equipo! - {empresa.nombre}",
+                        "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
 
-⏰ PLAZO:
-Por favor, envía la documentación requerida en los próximos 5 días hábiles para agilizar tu incorporación.
+¡Felicitaciones! Tu contratación ha sido completada.
 
-📧 CONTACTO:
-Para cualquier duda o consulta, responde a este correo o contacta al departamento de Recursos Humanos.
+🎉 Bienvenido/a a {empresa.nombre}
 
-¡Bienvenido/a al equipo de {empresa.nombre}!
+Nuestro equipo te contactará para coordinar tu fecha de inicio e inducción.
 
-Saludos cordiales,
-Equipo de Recursos Humanos
-{empresa.nombre}
-"""
+¡Estamos emocionados de tenerte con nosotros!
 
-            elif nuevo_estado == "Contratado":
-                asunto = f"¡Bienvenido/a al equipo! - {vacante.titulo} en {empresa.nombre}"
-                mensaje = f"""
-Estimado/a {candidato.first_name or candidato.username},
+{empresa.nombre}"""
+                    },
+                    "Rechazado": {
+                        "asunto": f"Actualización sobre tu postulación - {vacante_obj.titulo}",
+                        "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
 
-¡Felicitaciones! Tu proceso de contratación ha sido completado exitosamente.
+Gracias por tu interés en {vacante_obj.titulo} en {empresa.nombre}.
 
-🎉 BIENVENIDO/A A {empresa.nombre.upper()}
+Después de una cuidadosa evaluación, hemos decidido continuar con otros candidatos en esta ocasión.
 
-📋 INFORMACIÓN DE TU PUESTO:
-- Posición: {vacante.titulo}
-- Empresa: {empresa.nombre}
-- Modalidad: {vacante.modalidad_trabajo or 'Por definir'}
-- Jornada: {vacante.tipo_jornada or 'Por definir'}
+🔄 Te invitamos a postularte a futuras vacantes que se ajusten a tu perfil.
 
-📅 INICIO DE LABORES:
-Nuestro equipo de Recursos Humanos te contactará en las próximas horas para:
-- Confirmar tu fecha de inicio
-- Coordinar la sesión de inducción
-- Entregar credenciales y accesos
-- Presentarte a tu equipo de trabajo
+Te deseamos mucho éxito en tu búsqueda laboral.
 
-📝 PRIMER DÍA:
-- Programa de inducción corporativa
-- Presentación del equipo
-- Configuración de herramientas de trabajo
-- Entrega de equipos (si aplica)
-- Recorrido por las instalaciones
+Saludos,
+{empresa.nombre}"""
+                    }
+                }
+                
+                template = templates.get(nuevo_estado)
+                
+                if template:
+                    from django.core.mail import send_mail
+                    resultado = send_mail(
+                        subject=template["asunto"],
+                        message=template["mensaje"],
+                        from_email=settings.DEFAULT_FROM_EMAIL,
+                        recipient_list=[candidato.email],
+                        fail_silently=False,
+                        timeout=20
+                    )
+                    
+                    if resultado > 0:
+                        logger.info(f"✅ Correo '{nuevo_estado}' enviado a {candidato.email}")
+                        # Actualizar comentarios
+                        comentario = f"\n[{timezone.now().isoformat()}] Correo '{nuevo_estado}' enviado a {candidato.email}"
+                        from django.db import connection
+                        connection.close()
+                        Postulacion.objects.filter(id=postulacion.id).update(
+                            comentarios=(postulacion.comentarios or "") + comentario
+                        )
+                    else:
+                        logger.warning(f"⚠️ send_mail retornó 0 para {candidato.email}")
+                else:
+                    logger.info(f"ℹ️ No hay plantilla de correo para estado '{nuevo_estado}'")
+                    
+            except Exception as e:
+                logger.error(f"❌ Error enviando correo de estado '{nuevo_estado}': {e}")
+                import traceback
+                logger.error(traceback.format_exc())
 
-💼 DOCUMENTACIÓN FINAL:
-Asegúrate de tener lista toda la documentación solicitada para tu primer día.
+        # Registrar cambio y lanzar thread
+        comentario_cambio = f"\n[{timezone.now().isoformat()}] Estado cambiado: '{estado_anterior}' → '{nuevo_estado}' por {request.user.email}"
+        postulacion.comentarios = (postulacion.comentarios or "") + comentario_cambio
+        postulacion.save(update_fields=["comentarios"])
+        
+        # Thread NON-DAEMON
+        import threading
+        email_thread = threading.Thread(target=enviar_correo_cambio_estado, daemon=False)
+        email_thread.start()
+        
+        logger.info(f"✅ Estado actualizado: {estado_anterior} → {nuevo_estado}. Correo enviándose...")
 
-🎯 PRÓXIMOS PASOS:
-1. Confirma tu disponibilidad de inicio
-2. Completa los formularios de onboarding
-3. Prepara tu documentación
-4. Estate atento a comunicaciones de RRHH
-
-📧 CONTACTO:
-Para cualquier consulta, responde a este correo.
-
-¡Estamos emocionados de tenerte en nuestro equipo!
-
-Saludos cordiales,
-Equipo de Recursos Humanos
-{empresa.nombre}
-"""
-
-            elif nuevo_estado == "Rechazado":
-                asunto = f"Actualización sobre tu postulación - {vacante.titulo}"
-                mensaje = f"""
-Estimado/a {candidato.first_name or candidato.username},
-
-Gracias por tu interés en la posición de {vacante.titulo} en {empresa.nombre} y por el tiempo dedicado en nuestro proceso de selección.
-
-Después de una cuidadosa evaluación, lamentamos informarte que en esta ocasión hemos decidido continuar con otros candidatos cuyo perfil se ajusta más a los requerimientos específicos de esta posición.
-
-📋 RETROALIMENTACIÓN:
-Esta decisión no refleja tu valor profesional ni tus capacidades. El proceso de selección involucra múltiples factores y en ocasiones se basa en necesidades muy específicas del puesto.
-
-🔄 FUTURAS OPORTUNIDADES:
-- Tu perfil permanecerá en nuestra base de datos
-- Te consideraremos para futuras vacantes que se ajusten a tu experiencia
-- Te invitamos a estar atento a nuevas publicaciones en {empresa.nombre}
-- Puedes postularte nuevamente a otras posiciones que sean de tu interés
-
-💡 TE RECOMENDAMOS:
-- Seguir desarrollando tus habilidades profesionales
-- Mantener tu CV actualizado
-- Conectar con nosotros en redes profesionales
-- Participar en capacitaciones de tu área
-
-📧 AGRADECIMIENTO:
-Valoramos sinceramente el tiempo e interés que dedicaste a nuestro proceso de selección.
-
-Te deseamos mucho éxito en tu búsqueda laboral y en tus proyectos futuros.
-
-Saludos cordiales,
-Equipo de Recursos Humanos
-{empresa.nombre}
-"""
-
-            # Enviar el correo en background (intenta SMTP, fallback a SendGrid)
-            if asunto and mensaje:
-                logger.info(f"Programando envío de correo '{nuevo_estado}' a {candidato.email}")
-                enviar_correo_con_fallback(asunto, mensaje, candidato.email, postulacion.id)
-            else:
-                logger.warning(f"No se generó contenido de correo para estado '{nuevo_estado}'")
-            
-        except Exception as e:
-            logger.error(f"❌ Error preparando correo de notificación para postulación {postulacion_id}: {e}")
-            # No fallar la actualización de estado si falla la preparación del correo
-
-    # Respuesta INMEDIATA (no espera al correo)
     return Response({
-        "message": "Estado actualizado correctamente. El candidato recibirá un correo de notificación.",
+        "message": "Estado actualizado correctamente. El candidato recibirá una notificación por correo.",
         "postulacion_id": postulacion.id,
         "nuevo_estado": nuevo_estado
     })
+
+# ----------------------------
+# Contactar candidato
+# ----------------------------
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def contactar_candidato(request, postulacion_id):
+    """
+    Endpoint para que el reclutador (RRHH) o admin registre un comentario
+    en la postulación sin enviar correo (los correos se envían automáticamente al cambiar estado).
+    URL típica: POST /reclutador/postulaciones/<id>/contactar/
+    Body (JSON):
+    {
+        "asunto": "Nota sobre entrevista",
+        "mensaje": "El candidato confirmó disponibilidad..."
+    }
+    """
+
+    # 1️⃣ Verificar rol de quien llama (admin o RRHH)
+    caller_role_raw = getattr(request.user, 'role', None) or get_supabase_role(request.user)
+    caller_role = normalize_role(caller_role_raw)
+    print(f"👤 Caller role raw: {caller_role_raw} -> normalized: {caller_role}")
+
+    if caller_role not in (Roles.ADMIN, Roles.EMPLEADO_RRHH):
+        return Response(
+            {'error': 'Solo reclutadores (RRHH) o administradores pueden registrar notas.'},
+            status=403
+        )
+
+    # 2️⃣ Obtener la postulación
+    postulacion = get_object_or_404(Postulacion, id=postulacion_id)
+
+    # 3️⃣ Si es RRHH, comprobar que esté asignado a la vacante
+    if caller_role == Roles.EMPLEADO_RRHH:
+        asignado = VacanteRRHH.objects.filter(
+            vacante=postulacion.vacante,
+            rrhh_user=request.user
+        ).exists()
+
+        if not asignado:
+            return Response(
+                {'error': 'No tienes permisos sobre esta vacante/postulación.'},
+                status=403
+            )
+
+    # 4️⃣ Tomar asunto y mensaje del body
+    data = request.data
+    asunto = data.get('asunto') or 'Nota interna'
+    mensaje = data.get('mensaje')
+
+    if not mensaje:
+        return Response(
+            {'error': 'El campo "mensaje" es obligatorio.'},
+            status=400
+        )
+
+    # 5️⃣ Guardar comentario en la postulación (historial) sin enviar correo
+    marca_tiempo = timezone.now().strftime("%Y-%m-%d %H:%M")
+    comentario_nuevo = (
+        f"[{marca_tiempo}] {request.user.email} registró nota:\n"
+        f"Asunto: {asunto}\n"
+        f"Mensaje: {mensaje}\n\n"
+    )
+
+    # Asegurarnos de no romper si por alguna razón no existe el campo
+    if hasattr(postulacion, "comentarios"):
+        if postulacion.comentarios:
+            postulacion.comentarios += comentario_nuevo
+        else:
+            postulacion.comentarios = comentario_nuevo
+        postulacion.save(update_fields=["comentarios"])
+
+    # 6️⃣ Respuesta
+    return Response(
+        {'message': 'Nota registrada correctamente en la postulación'},
+        status=200
+    )
+
+
+# ----------------------------
+# Permisos
+# ----------------------------
+
+class IsOwner(permissions.BasePermission):
+    """Permiso simple: solo el propietario puede modificar/ver este objeto."""
+    def has_object_permission(self, request, view, obj):
+        # Soporta objetos con atributo 'owner' o 'user'
+        owner = getattr(obj, 'owner', None) or getattr(obj, 'user', None)
+        return owner == request.user
+
+
+# Inicializar cliente Supabase con timeout extendido (60s)
+import httpx
+_timeout = httpx.Timeout(60.0, connect=60.0, read=60.0, write=60.0)
+_http_client = httpx.Client(timeout=_timeout, verify=True)
+
+supabase = create_client(
+    settings.SUPABASE_URL,
+    settings.SUPABASE_SERVICE_KEY,
+)
+
+def upload_to_supabase_with_retry(bucket_path, file_bytes, file_name, content_type,
+                                  max_retries=3, initial_backoff=1.0):
+    """Suba archivos a Supabase con reintentos exponenciales. Recibe bytes directamente."""
+    backoff = initial_backoff
+    last_exc = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info(f"Intento {attempt}/{max_retries} de subir {file_name} a {bucket_path}")
+            res = supabase.storage.from_(bucket_path).upload(
+                file_name,
+                file_bytes,
+                file_options={"content-type": content_type, "upsert": "true"}
+            )
+            if res is None or getattr(res, "error", None):
+                raise Exception(f"Error en upload: {getattr(res, 'error', 'respuesta vacía')}")
+            logger.info(f"Upload exitoso en intento {attempt}")
+            return res
+        except Exception as e:
+            last_exc = e
+            if attempt < max_retries:
+                logger.warning(f"Fallo en intento {attempt}: {e}. Reintentando en {backoff}s...")
+                time.sleep(backoff)
+                backoff *= 2
+            else:
+                logger.error(f"Fallo definitivo después de {max_retries} intentos: {e}")
+    raise last_exc
+
+class IsAdmin(permissions.BasePermission):
+    """Solo administradores pueden gestionar usuarios"""
+    def has_permission(self, request, view):
+        user_role = normalize_role(getattr(request.user, 'role', None) or get_supabase_role(request.user))
+        return user_role == Roles.ADMIN
+
+
+class IsAdminUserOrReadSelf(permissions.BasePermission):
+    """
+    Permiso compuesto:
+    - Admin: puede listar, crear, actualizar y eliminar usuarios.
+    - Usuario normal: solo puede ver y editar su propio perfil.
+    """
+    def has_permission(self, request, view):
+        user_role = normalize_role(getattr(request.user, 'role', None) or get_supabase_role(request.user))
+        if user_role == Roles.ADMIN:
+            return True
+        return request.method in permissions.SAFE_METHODS or view.action in ['retrieve', 'update', 'partial_update']
+
+    def has_object_permission(self, request, view, obj):
+        user_role = normalize_role(getattr(request.user, 'role', None) or get_supabase_role(request.user))
+        if user_role == Roles.ADMIN:
+            return True
+        return obj == request.user
+
+from rest_framework.permissions import BasePermission
+
+class IsAdminOrRRHH(BasePermission):
+      def has_permission(self, request, view):
+        user_role = normalize_role(getattr(request.user, 'role', None) or get_supabase_role(request.user))
+        return user_role in (Roles.ADMIN, Roles.EMPLEADO_RRHH)
+
+# ----------------------------
+# Home
+# ----------------------------
+def home(request):
+    return HttpResponse("¡Hola, Django está funcionando correctamente!")
+
+
+# Test endpoint para verificar conexión a Supabase
+class TestSupabaseView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        try:
+            response = supabase.table("usuarios").select("id, email").limit(1).execute()
+            return Response({
+                "message": "Conexión a Supabase exitosa",
+                "data": response.data
+            })
+        except Exception as e:
+            return Response({
+                "message": "Error al conectar a Supabase",
+                "error": str(e)
+            }, status=500)
+
+
+# ----------------------------
+# Registro de usuarios
+# ----------------------------
+class RegisterView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = UserSerializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.save()
+            return Response({
+                "user": UserSerializer(user).data,
+                "message": "Usuario creado exitosamente"
+            }, status=201)
+        return Response(serializer.errors, status=400)
+
+
+# ----------------------------
+# Login con JWT
+# ----------------------------
+from .serializers import supabase
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    def validate(self, attrs):
+        # 1. Autenticar en Django
+        data = super().validate(attrs)
+
+        # 2. Obtener el usuario
+        user = self.user
+
+        # 3. Verificar en Supabase si el usuario existe
+        try:
+            supabase_response = supabase.table("auth_user").select("id, email, role").eq("email", user.email).execute()
+
+            if supabase_response.data:
+                user_data = supabase_response.data[0]
+                data["user"] = {
+                    "id": user.id,
+                    "email": user.email,
+                    "role": user_data.get("role", "candidato"),  # Rol desde Supabase
+                    "username": user.username
+                }
+            else:
+                # Si no existe en Supabase, asignar rol 'candidato' por defecto
+                data["user"] = {
+                    "id": user.id,
+                    "email": user.email,
+                    "role": "candidato",
+                    "username": user.username
+                }
+
+        except Exception as e:
+            print(f"⚠️ Error consultando Supabase: {e}")
+            # Si falla la consulta, devolver datos básicos
+            data["user"] = {
+                "id": user.id,
+                "email": user.email,
+                "username": user.username,
+                "role": "candidato"
+            }
+
+        return data
+
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    serializer_class = CustomTokenObtainPairSerializer
+
+
+# ----------------------------
+# Asignar RRHH a vacante (Admin only)
+# ----------------------------
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def asignar_rrhh_vacante(request):
+    """Permite al admin asignar un empleado RRHH a una vacante específica.
+
+    Body esperado:
+    {
+        "vacante_id": 1,
+        "rrhh_email": "empleado@empresa.com"
+    }
+    """
+    caller_role = normalize_role(getattr(request.user, 'role', None) or get_supabase_role(request.user))
+    if caller_role != Roles.ADMIN:
+        return Response({'error': 'Solo el administrador puede asignar RRHH a vacantes.'}, status=403)
+
+    vacante_id = request.data.get('vacante_id')
+    rrhh_email = request.data.get('rrhh_email')
+
+    if not vacante_id or not rrhh_email:
+        return Response({'error': 'Debes enviar vacante_id y rrhh_email.'}, status=400)
+
+    # Validar que la vacante existe
+    try:
+        vacante = Vacante.objects.get(id=vacante_id)
+    except Vacante.DoesNotExist:
+        return Response({'error': 'Vacante no encontrada.'}, status=404)
+
+    # Obtener el usuario RRHH por email
+    try:
+        rrhh_user = User.objects.get(email=rrhh_email)
+    except User.DoesNotExist:
+        return Response({'error': 'Usuario RRHH no encontrado con ese email.'}, status=404)
+
+    # Validar que el usuario tenga rol RRHH
+    rrhh_role = normalize_role(getattr(rrhh_user, 'role', None) or get_supabase_role(rrhh_user))
+    if rrhh_role != Roles.EMPLEADO_RRHH:
+        return Response({'error': f'El usuario {rrhh_email} no tiene rol RRHH.'}, status=400)
+
+    # Crear o recuperar la asignación
+    asignacion, created = VacanteRRHH.objects.get_or_create(
+        vacante=vacante,
+        rrhh_user=rrhh_user
+    )
+
+    if created:
+        msg = f'RRHH {rrhh_email} asignado a vacante {vacante.titulo}.'
+    else:
+        msg = f'RRHH {rrhh_email} ya estaba asignado a vacante {vacante.titulo}.'
+
+    return Response({'message': msg, 'asignacion_id': asignacion.id}, status=200)
+# Obtener postulaciones asignadas a un usuario RRHH
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def obtener_postulaciones_asignadas_rrhh(request):
+    """Devuelve todas las postulaciones de las vacantes asignadas al RRHH autenticado.
+
+    Requiere rol RRHH.
+    """
+    caller_role = normalize_role(getattr(request.user, 'role', None) or get_supabase_role(request.user))
+    if caller_role != Roles.EMPLEADO_RRHH:
+        return Response({'error': 'Solo usuarios RRHH pueden ver sus postulaciones asignadas.'}, status=403)
+
+    # Obtener vacantes asignadas al RRHH
+    asignaciones = VacanteRRHH.objects.filter(rrhh_user=request.user).select_related('vacante')
+    vacantes_ids = [a.vacante.id for a in asignaciones]
+
+    if not vacantes_ids:
+        return Response({'postulaciones': []}, status=200)
+
+    # Obtener todas las postulaciones de esas vacantes
+    postulaciones = Postulacion.objects.filter(vacante_id__in=vacantes_ids).select_related(
+        'candidato', 'vacante', 'empresa'
+    )
+
+    serializer = PostulacionSerializer(postulaciones, many=True)
+    return Response({'postulaciones': serializer.data}, status=200)
+
+
+# ViewSet para Empresas (CRUD)
+class EmpresaViewSet(viewsets.ModelViewSet):
+    """CRUD completo para empresas. Solo admins."""
+    queryset = Empresa.objects.all()
+    serializer_class = EmpresaSerializer
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+
+# ViewSet para Postulaciones (readonly para candidatos, write para RRHH/admin)
+class PostulacionViewSet(viewsets.ModelViewSet):
+    """CRUD para postulaciones. Filtrado automático según rol."""
+    queryset = Postulacion.objects.all()
+    serializer_class = PostulacionSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        role = normalize_role(getattr(user, 'role', None) or get_supabase_role(user))
+
+        if role == Roles.ADMIN:
+            return Postulacion.objects.all()
+        elif role == Roles.EMPLEADO_RRHH:
+            # RRHH ve solo las postulaciones de vacantes asignadas
+            asignaciones = VacanteRRHH.objects.filter(rrhh_user=user)
+            vacantes_ids = [a.vacante.id for a in asignaciones]
+            return Postulacion.objects.filter(vacante_id__in=vacantes_ids)
+        elif role == Roles.CANDIDATO:
+            # Candidato ve solo sus propias postulaciones
+            return Postulacion.objects.filter(candidato=user)
+        else:
+            return Postulacion.objects.none()
+
+
+# ViewSet para Entrevistas
+class EntrevistaViewSet(viewsets.ModelViewSet):
+    queryset = Entrevista.objects.all()
+    serializer_class = EntrevistaSerializer
+    permission_classes = [IsAuthenticated, IsAdminOrRRHH]
+
+    def get_queryset(self):
+        user = self.request.user
+        role = normalize_role(getattr(user, 'role', None) or get_supabase_role(user))
+
+        if role == Roles.ADMIN:
+            return Entrevista.objects.all()
+        elif role == Roles.EMPLEADO_RRHH:
+            # RRHH ve solo entrevistas de vacantes asignadas
+            asignaciones = VacanteRRHH.objects.filter(rrhh_user=user)
+            vacantes_ids = [a.vacante.id for a in asignaciones]
+            postulaciones_ids = Postulacion.objects.filter(vacante_id__in=vacantes_ids).values_list('id', flat=True)
+            return Entrevista.objects.filter(postulacion_id__in=postulaciones_ids)
+        else:
+            return Entrevista.objects.none()
+
+
+# Perfil del usuario autenticado
+@api_view(["GET", "PUT", "PATCH"])
+@permission_classes([IsAuthenticated])
+def mi_perfil(request):
+    """
+    GET: Devuelve la información del perfil del usuario autenticado.
+    PUT/PATCH: Actualiza la información del perfil.
+    """
+    user = request.user
+
+    if request.method == "GET":
+        serializer = PerfilUsuarioSerializer(user)
+        return Response(serializer.data)
+
+    elif request.method in ["PUT", "PATCH"]:
+        serializer = PerfilUsuarioSerializer(user, data=request.data, partial=(request.method == "PATCH"))
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
+
+
+# Vista para actualizar la hoja de vida (CV)
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def actualizar_hoja_vida(request):
+    """
+    Permite al usuario subir o actualizar su archivo de hoja de vida.
+
+    Body esperado (form-data):
+    - hoja_de_vida: archivo PDF
+
+    Sube a Supabase Storage y actualiza la URL en el campo hoja_de_vida del perfil.
+    """
+    user = request.user
+    perfil, _ = PerfilUsuario.objects.get_or_create(user=user)
+
+    # Validar archivo
+    archivo_cv = request.FILES.get('hoja_de_vida')
+    if not archivo_cv:
+        return Response({'error': 'Debe enviar el archivo "hoja_de_vida".'}, status=400)
+
+    # Validar el archivo
+    try:
+        validate_hoja_vida(archivo_cv)
+    except Exception as e:
+        return Response({'error': str(e)}, status=400)
+
+    # Subir a Supabase Storage
+    try:
+        ruta_supabase = f"perfiles/hoja_vida_{user.id}.pdf"
+        contenido = archivo_cv.read()
+
+        upload_to_supabase_with_retry(
+            bucket_path="perfiles",
+            file_bytes=contenido,
+            file_name=ruta_supabase,
+            content_type=archivo_cv.content_type
+        )
+
+        # Obtener URL pública
+        url_final = supabase.storage.from_("perfiles").get_public_url(ruta_supabase)
+
+        # Actualizar perfil
+        perfil.hoja_de_vida = url_final
+        perfil.save()
+
+        return Response({
+            'message': 'Hoja de vida actualizada exitosamente.',
+            'url': url_final
+        }, status=200)
+
+    except Exception as e:
+        return Response({'error': f'Error subiendo archivo: {str(e)}'}, status=500)
+
+
+# Crear favorito
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def crear_favorito(request):
+    """
+    Permite al usuario autenticado marcar una vacante como favorita.
+
+    Body esperado:
+    {
+        "vacante_id": 1
+    }
+    """
+    vacante_id = request.data.get('vacante_id')
+
+    if not vacante_id:
+        return Response({'error': 'Debe enviar "vacante_id".'}, status=400)
+
+    try:
+        vacante = Vacante.objects.get(id=vacante_id)
+    except Vacante.DoesNotExist:
+        return Response({'error': 'Vacante no encontrada.'}, status=404)
+
+    # Crear o recuperar favorito
+    favorito, created = Favorito.objects.get_or_create(usuario=request.user, vacante=vacante)
+
+    if created:
+        return Response({'message': 'Vacante marcada como favorita.'}, status=201)
+    else:
+        return Response({'message': 'Esta vacante ya está en tus favoritos.'}, status=200)
+
+
+# Listar favoritos
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def listar_favoritos(request):
+    """
+    Devuelve la lista de vacantes favoritas del usuario autenticado.
+    """
+    favoritos = Favorito.objects.filter(usuario=request.user).select_related('vacante')
+    serializer = FavoritoSerializer(favoritos, many=True)
+    return Response(serializer.data)
+
+
+# Eliminar favorito
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def eliminar_favorito(request, vacante_id):
+    """
+    Elimina una vacante de los favoritos del usuario autenticado.
+    """
+    try:
+        favorito = Favorito.objects.get(usuario=request.user, vacante_id=vacante_id)
+        favorito.delete()
+        return Response({'message': 'Vacante eliminada de favoritos.'}, status=200)
+    except Favorito.DoesNotExist:
+        return Response({'error': 'Favorito no encontrado.'}, status=404)
+
+
+# ----------------------------
+# Perfil de candidato (público, visto por RRHH/Admin)
+# ----------------------------
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, IsAdminOrRRHH])
+def perfil_candidato(request, candidato_id):
+    """
+    Devuelve el perfil completo de un candidato.
+    Solo accesible por Admin o RRHH.
+    """
+    try:
+        candidato = User.objects.get(id=candidato_id)
+    except User.DoesNotExist:
+        return Response({'error': 'Candidato no encontrado.'}, status=404)
+
+    # Verificar que el candidato tenga rol de candidato
+    role = normalize_role(getattr(candidato, 'role', None) or get_supabase_role(candidato))
+    if role != Roles.CANDIDATO:
+        return Response({'error': 'El usuario no es un candidato.'}, status=400)
+
+    serializer = PerfilUsuarioSerializer(candidato)
+    return Response(serializer.data)
+
+
+# ----------------------------
+# Password Reset
+# ----------------------------
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def solicitar_reset_password(request):
+    """
+    Permite solicitar un enlace para restablecer contraseña.
+
+    Body esperado:
+    {
+        "email": "usuario@ejemplo.com"
+    }
+    """
+    email = request.data.get('email')
+
+    if not email:
+        return Response({'error': 'Debe enviar el campo "email".'}, status=400)
+
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
+        # Por seguridad, no revelar si el email existe o no
+        return Response({'message': 'Si el correo existe, recibirás un enlace para restablecer tu contraseña.'}, status=200)
+
+    # Generar token de reset
+    token = default_token_generator.make_token(user)
+    uid = urlsafe_base64_encode(force_bytes(user.pk))
+
+    # Construir enlace (ajusta el dominio según tu configuración)
+    reset_link = f"http://tu-dominio.com/reset-password/{uid}/{token}/"
+
+    # Enviar correo
+    asunto = 'Restablecer tu contraseña'
+    mensaje = f"""
+Hola {user.username},
+
+Hemos recibido una solicitud para restablecer tu contraseña.
+
+Si fuiste tú, haz clic en el siguiente enlace:
+{reset_link}
+
+Si no solicitaste esto, ignora este correo.
+
+Saludos,
+Equipo de Soporte
+"""
+
+    send_mail(
+        subject=asunto,
+        message=mensaje,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[user.email],
+        fail_silently=True,
+    )
+
+    return Response({'message': 'Si el correo existe, recibirás un enlace para restablecer tu contraseña.'}, status=200)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def reset_password_confirm(request):
+    """
+    Confirma el restablecimiento de contraseña con el token.
+
+    Body esperado:
+    {
+        "uid": "...",
+        "token": "...",
+        "new_password": "nueva_contraseña"
+    }
+    """
+    uid = request.data.get('uid')
+    token = request.data.get('token')
+    new_password = request.data.get('new_password')
+
+    if not all([uid, token, new_password]):
+        return Response({'error': 'Debe enviar uid, token y new_password.'}, status=400)
+
+    try:
+        user_id = force_str(urlsafe_base64_decode(uid))
+        user = User.objects.get(pk=user_id)
+    except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+        return Response({'error': 'Enlace inválido.'}, status=400)
+
+    if not default_token_generator.check_token(user, token):
+        return Response({'error': 'Token inválido o expirado.'}, status=400)
+
+    # Cambiar contraseña
+    user.set_password(new_password)
+    user.save()
+
+    return Response({'message': 'Contraseña restablecida exitosamente.'}, status=200)
+
+
+# ----------------------------
+# Permisos
+# ----------------------------
+
+class IsOwner(permissions.BasePermission):
+    """Permiso simple: solo el propietario puede modificar/ver este objeto."""
+    def has_object_permission(self, request, view, obj):
+        # Soporta objetos con atributo 'owner' o 'user'
+        owner = getattr(obj, "owner", None) or getattr(obj, "user", None)
+        return bool(owner and owner == request.user)
+
+# Inicializar cliente Supabase con timeout extendido (60s)
+import httpx
+_timeout = httpx.Timeout(60.0, connect=60.0, read=60.0, write=60.0)
+_http_client = httpx.Client(timeout=_timeout, verify=True)
+
+supabase = create_client(
+    settings.SUPABASE_URL,
+    settings.SUPABASE_SERVICE_KEY,
+)
+
+def upload_to_supabase_with_retry(bucket_path, file_bytes, file_name, content_type,
+                                  max_retries=3, initial_backoff=1.0):
+    """Sube archivos a Supabase con reintentos exponenciales. Recibe bytes directamente."""
+    import time as _time
+    last_exc = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"📤 Intento {attempt}/{max_retries}: subiendo {file_name} ({len(file_bytes)} bytes) a {bucket_path}")
+            resp = supabase.storage.from_("perfiles").upload(
+                bucket_path,
+                file_bytes,
+                {"content-type": content_type}
+            )
+            print(f"✅ Archivo subido exitosamente: {bucket_path}")
+            return resp
+        except Exception as e:
+            last_exc = e
+            print(f"⚠️ Error en intento {attempt}: {type(e).__name__}: {e}")
+            if attempt == max_retries:
+                print(f"❌ Superados {max_retries} intentos para {file_name}")
+                raise
+            backoff = initial_backoff * (2 ** (attempt - 1))
+            print(f"⏳ Esperando {backoff}s antes del siguiente intento...")
+            _time.sleep(backoff)
+    raise last_exc
+
+
 # ----------------------------
 # Contactar candidato
 # ----------------------------
