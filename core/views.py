@@ -1,4 +1,5 @@
 # core/views.py
+import os
 from django.http import HttpResponse
 from django.contrib.auth import get_user_model
 from rest_framework import viewsets, permissions, status
@@ -50,6 +51,93 @@ from io import BytesIO
 logger = logging.getLogger(__name__)
 
 
+# ===== FUNCIÓN HELPER PARA ENVÍO DE CORREOS =====
+def enviar_correo_con_fallback(asunto, mensaje, destinatario, postulacion_id=None):
+    """
+    Intenta enviar correo por SMTP (para local) y si falla usa SendGrid (para producción).
+    Retorna True si se envió exitosamente, False si falló.
+    """
+    import threading
+    
+    def _enviar():
+        correo_enviado = False
+        metodo_usado = None
+        
+        # Método 1: Intentar SMTP tradicional (funciona en local)
+        try:
+            logger.info(f"📧 [SMTP] Intentando enviar correo a {destinatario}: {asunto}")
+            
+            resultado = send_mail(
+                subject=asunto,
+                message=mensaje,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[destinatario],
+                fail_silently=False,
+                timeout=10  # Timeout corto para fallar rápido
+            )
+            
+            if resultado > 0:
+                correo_enviado = True
+                metodo_usado = "SMTP"
+                logger.info(f"✅ [SMTP] Correo enviado exitosamente a {destinatario}")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ [SMTP] Falló (esperado en producción): {str(e)}")
+            
+            # Método 2: Intentar SendGrid como fallback
+            try:
+                logger.info(f"📧 [SendGrid] Intentando enviar correo a {destinatario}")
+                
+                from sendgrid import SendGridAPIClient
+                from sendgrid.helpers.mail import Mail
+                
+                sendgrid_api_key = os.getenv('SENDGRID_API_KEY')
+                
+                if not sendgrid_api_key:
+                    logger.error("❌ [SendGrid] SENDGRID_API_KEY no configurada")
+                    return
+                
+                message = Mail(
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    to_emails=destinatario,
+                    subject=asunto,
+                    plain_text_content=mensaje
+                )
+                
+                sg = SendGridAPIClient(sendgrid_api_key)
+                response = sg.send(message)
+                
+                if response.status_code in [200, 201, 202]:
+                    correo_enviado = True
+                    metodo_usado = "SendGrid"
+                    logger.info(f"✅ [SendGrid] Correo enviado exitosamente a {destinatario} (status: {response.status_code})")
+                else:
+                    logger.error(f"❌ [SendGrid] Status inesperado: {response.status_code}")
+                    
+            except Exception as e2:
+                logger.error(f"❌ [SendGrid] Error: {str(e2)}", exc_info=True)
+        
+        # Registrar en comentarios de postulación
+        if correo_enviado and postulacion_id:
+            try:
+                from .models import Postulacion
+                postulacion = Postulacion.objects.get(id=postulacion_id)
+                comentario = f"[{timezone.now().isoformat()}] Correo '{asunto}' enviado a {destinatario} via {metodo_usado}."
+                if postulacion.comentarios:
+                    postulacion.comentarios += f"\n{comentario}"
+                else:
+                    postulacion.comentarios = comentario
+                postulacion.save(update_fields=["comentarios"])
+                logger.info(f"📝 Comentario registrado en postulación {postulacion_id}")
+            except Exception as e:
+                logger.warning(f"No se pudo registrar el envío en comentarios: {e}")
+        
+        return correo_enviado
+    
+    # Ejecutar en thread para no bloquear
+    thread = threading.Thread(target=_enviar, daemon=False)
+    thread.start()
+    logger.info(f"🚀 Thread de correo iniciado para {destinatario}")
 
 
 supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
@@ -816,14 +904,12 @@ def postular_vacante(request, vacante_id):
         fecha_postulacion=timezone.now()
     )
 
-    # 10) Enviar correo en un thread separado para NO BLOQUEAR la respuesta HTTP
-    def enviar_correo_background():
-        try:
-            candidato = request.user
-            empresa = vacante.id_empresa
-            
-            asunto = f"Confirmación de postulación - {vacante.titulo}"
-            mensaje = f"""
+    # 10) Enviar correo de confirmación (SMTP local / SendGrid producción)
+    candidato = request.user
+    empresa = vacante.id_empresa
+    
+    asunto = f"Confirmación de postulación - {vacante.titulo}"
+    mensaje = f"""
 Estimado/a {candidato.first_name or candidato.username},
 
 ¡Gracias por postularte! Hemos recibido exitosamente tu postulación para la posición de {vacante.titulo} en {empresa.nombre}.
@@ -875,32 +961,13 @@ Equipo de Recursos Humanos
 
 ---
 Este es un correo automático generado por el sistema de gestión de candidatos.
+ID de Postulación: {postulacion.id}
 """
 
-            # Enviar correo (esto ocurre en background, no bloquea la respuesta)
-            send_mail(
-                subject=asunto,
-                message=mensaje,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[candidato.email],
-                fail_silently=True,
-            )
-            
-            # Registrar en comentarios que se envió el correo
-            comentario_registro = f"[{timezone.now().isoformat()}] Correo de confirmación 'Postulado' enviado automáticamente a {candidato.email}."
-            postulacion.comentarios = comentario_registro
-            postulacion.save(update_fields=["comentarios"])
-            
-        except Exception as e:
-            logger.warning(f"No se pudo enviar correo de confirmación para postulación {postulacion.id}: {e}")
+    # Enviar correo en background (intenta SMTP, fallback a SendGrid)
+    enviar_correo_con_fallback(asunto, mensaje, candidato.email, postulacion.id)
 
-    # Iniciar thread para enviar correo en background
-    import threading
-    email_thread = threading.Thread(target=enviar_correo_background)
-    email_thread.daemon = True  # El thread se cerrará cuando termine el proceso principal
-    email_thread.start()
-
-    # 11) Respuesta final INMEDIATA (no espera a que se envíe el correo)
+    # 11) Respuesta INMEDIATA (no espera al correo)
     return JsonResponse({
         "message": "Postulación registrada correctamente. Recibirás un correo de confirmación en breve.",
         "postulacion_id": postulacion.id,
@@ -1639,35 +1706,20 @@ Equipo de Recursos Humanos
 {empresa.nombre}
 """
 
-            # Enviar el correo si hay contenido
+            # Enviar el correo en background (intenta SMTP, fallback a SendGrid)
             if asunto and mensaje:
-                logger.info(f"Enviando correo '{nuevo_estado}' a {candidato.email}")
-                logger.info(f"Asunto: {asunto}")
-                
-                send_mail(
-                    subject=asunto,
-                    message=mensaje,
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[candidato.email],
-                    fail_silently=False,
-                )
-                
-                logger.info(f"✅ Correo '{nuevo_estado}' enviado exitosamente a {candidato.email}")
-                
-                # Registrar en comentarios que se envió el correo
-                comentario_registro = f"\n[{timezone.now().isoformat()}] Correo '{nuevo_estado}' enviado automáticamente a {candidato.email}."
-                postulacion.comentarios = (postulacion.comentarios or "") + comentario_registro
-                postulacion.save(update_fields=["comentarios"])
+                logger.info(f"Programando envío de correo '{nuevo_estado}' a {candidato.email}")
+                enviar_correo_con_fallback(asunto, mensaje, candidato.email, postulacion.id)
             else:
                 logger.warning(f"No se generó contenido de correo para estado '{nuevo_estado}'")
             
         except Exception as e:
-            logger.error(f"❌ Error al enviar correo de notificación para postulación {postulacion_id}: {e}")
-            logger.exception("Traceback completo del error:")
-            # No fallar la actualización de estado si falla el correo
+            logger.error(f"❌ Error preparando correo de notificación para postulación {postulacion_id}: {e}")
+            # No fallar la actualización de estado si falla la preparación del correo
 
+    # Respuesta INMEDIATA (no espera al correo)
     return Response({
-        "message": "Estado actualizado correctamente",
+        "message": "Estado actualizado correctamente. El candidato recibirá un correo de notificación.",
         "postulacion_id": postulacion.id,
         "nuevo_estado": nuevo_estado
     })

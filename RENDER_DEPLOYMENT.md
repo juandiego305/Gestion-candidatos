@@ -28,10 +28,13 @@ DATABASE_URL=postgresql://postgres:4sLsg873jktoN3vn@db.fkpjhyjcexhhbljexrbb.supa
 SUPABASE_URL=https://fkpjhyjcexhhbljexrbb.supabase.co
 SUPABASE_SERVICE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZrcGpoeWpjZXhoaGJsamV4cmJiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTczMjY2NDM1MywiZXhwIjoyMDQ4MjQwMzUzfQ.qM5x4V0W2rWTW6pI4wRGOMuPy13l9SN4ZnHk7IqaC4w
 
+EMAIL_HOST_USER=talentohub2025@gmail.com
 EMAIL_HOST_PASSWORD=ejsu oaiq zivq zdus
 
 PYTHON_VERSION=3.11.0
 ```
+
+**⚠️ IMPORTANTE:** Asegúrate de agregar `EMAIL_HOST_USER` además de `EMAIL_HOST_PASSWORD` para que el envío de correos funcione en producción.
 
 ## Solución de Problemas Comunes
 
@@ -86,9 +89,64 @@ La operación completa (validar + subir archivo + guardar DB + enviar correo) ta
 5. ✅ **Timeout de gunicorn aumentado** - 120s en lugar de 30s por defecto
 
 **Resultado esperado:**
-- ⚡ Respuesta HTTP en < 5 segundos (solo valida + sube archivo + guarda DB)
-- 📧 Correo enviado en background (1-10 segundos después)
+- ⚡ Respuesta HTTP en < 10 segundos (valida + sube archivo + guarda DB + intenta enviar correo)
+- 📧 Correo enviado durante la request (con timeout de 15s)
 - ✅ No más timeouts 504
+- ✅ Si el correo falla, la postulación igual se guarda
+
+### Correos no se envían en producción (pero funcionan en local)
+
+**Síntomas:**
+- En local los correos llegan perfectamente
+- En producción (Render) no llegan correos
+- La postulación se guarda correctamente
+- No hay errores visibles en la respuesta HTTP
+
+**Causas posibles:**
+
+1. **Falta la variable de entorno `EMAIL_HOST_USER`**
+   - Verifica en Render Dashboard → Environment que existe `EMAIL_HOST_USER=talentohub2025@gmail.com`
+   - Sin esta variable, Django no puede autenticarse con Gmail SMTP
+
+2. **Firewall de Render bloqueando conexiones SMTP salientes**
+   - Render Free tier puede tener limitaciones de red
+   - Los puertos 587/465 pueden estar bloqueados
+
+3. **Timeout de conexión SMTP**
+   - La conexión a smtp.gmail.com tarda mucho desde los servidores de Render
+   - Solución: Aumentar `EMAIL_TIMEOUT` en settings.py (ya configurado a 15s)
+
+4. **Credenciales incorrectas o "App Password" inválida**
+   - Verifica que `EMAIL_HOST_PASSWORD=ejsu oaiq zivq zdus` es correcta
+   - Esta debe ser una "App Password" de Gmail, no la contraseña normal
+
+**Solución paso a paso:**
+
+1. **Verificar variables de entorno en Render:**
+   ```
+   EMAIL_HOST_USER=talentohub2025@gmail.com
+   EMAIL_HOST_PASSWORD=ejsu oaiq zivq zdus
+   ```
+
+2. **Revisar logs en Render:**
+   - Ve a Render Dashboard → tu servicio → Logs
+   - Busca mensajes como:
+     - `✅ Correo enviado exitosamente` (éxito)
+     - `❌ Timeout enviando correo` (problema de red)
+     - `❌ Error enviando correo` (problema de autenticación)
+
+3. **Test manual de SMTP desde Render:**
+   - En Render Shell, ejecuta:
+   ```python
+   python manage.py shell
+   from django.core.mail import send_mail
+   send_mail('Test', 'Mensaje de prueba', 'talentohub2025@gmail.com', ['tu-email@ejemplo.com'])
+   ```
+
+4. **Si el problema persiste, considera alternativas:**
+   - **SendGrid** (200 correos gratis/día): Más confiable en producción
+   - **Mailgun** (100 correos gratis/día): Excelente para Django
+   - **Amazon SES** (62,000 correos gratis/mes): Muy económico
 
 ## Verificación Post-Deploy
 
