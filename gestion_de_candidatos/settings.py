@@ -94,7 +94,7 @@ CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
     "https://front-talento-h.vercel.app",
-    "https://gestion-candidatos-3.onrender.com"
+    "https://gestion-candidatos-4.onrender.com"
 ]
 CORS_ALLOW_HEADERS = list(default_headers) + [
     'access-control-allow-origin',
