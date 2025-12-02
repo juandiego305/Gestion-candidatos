@@ -2220,7 +2220,7 @@ class PasswordResetRequestView(APIView):
             user = User.objects.get(email=email)
             token = default_token_generator.make_token(user)
             uid = urlsafe_base64_encode(force_bytes(user.pk))
-            reset_link = f"http://localhost:3000/reset-password/{uid}/{token}/"
+            reset_link = f"https://gestion-candidatos-3.onrender.com/reset-password/{uid}/{token}/"
 
             send_mail(
                 subject="Resetear contraseña",
