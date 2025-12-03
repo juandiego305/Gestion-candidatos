@@ -12,13 +12,13 @@ workers = multiprocessing.cpu_count() * 2 + 1
 worker_class = "sync"
 
 # Timeout para requests (aumentado a 120 segundos para operaciones lentas)
-timeout = 120
+timeout = 120*5
 
 # Timeout para mantener conexiones keep-alive
 keepalive = 5
 
 # Timeout para workers silenciosos (aumentado a 120 segundos)
-graceful_timeout = 120
+graceful_timeout = 120*5
 
 # Nivel de log
 loglevel = "info"
