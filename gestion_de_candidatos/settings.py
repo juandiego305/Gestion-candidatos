@@ -179,20 +179,19 @@ SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "talentohub2025@gmail.com")
 
 if SENDGRID_API_KEY:
-    # ---- SENDGRID SMTP CONFIG ----
+    # ---- SENDGRID CONFIG ----
+    EMAIL_BACKEND = "sendgrid_backend.SendgridBackend"
+    SENDGRID_SANDBOX_MODE_IN_DEBUG = False  # desactivar modo sandbox
+    print("✅ SendGrid activado")
+else:
+    # ---- GMAIL CONFIG (solo si no hay SendGrid) ----
     EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-    EMAIL_HOST = "smtp.sendgrid.net"
+    EMAIL_HOST = "smtp.gmail.com"
     EMAIL_PORT = 587
     EMAIL_USE_TLS = True
-    EMAIL_HOST_USER = "apikey"  # Siempre es 'apikey' para SendGrid
-    EMAIL_HOST_PASSWORD = SENDGRID_API_KEY  # Tu API Key de SendGrid
-    print("✅ SendGrid SMTP activado")
-else:
-    # ---- BACKEND CONSOLA (no envía correos reales, solo los muestra en logs) ----
-    # Esto evita timeouts en Render cuando no hay SendGrid configurado
-    EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
-    print("⚠️ Email backend: CONSOLA (correos se muestran en logs, no se envían)")
-    print("⚠️ Para enviar correos reales, configura SENDGRID_API_KEY en Render")
+    EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "talentohub2025@gmail.com")
+    EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+    print("⚠️ Gmail SMTP usado como respaldo")
 
 EMAIL_TIMEOUT = 30
 

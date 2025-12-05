@@ -2577,34 +2577,23 @@ Saludos,
 Equipo de Soporte
 """
 
-    # Enviar correo en background thread (no bloquear respuesta HTTP)
-    import threading
-    def enviar_correo_reset():
-        try:
-            print(f"📧 Intentando enviar correo de reset a {user.email}")
-            logger.info(f"📧 Intentando enviar correo de reset a {user.email}")
-            
-            from django.core.mail import send_mail
-            resultado = send_mail(
-                subject=asunto,
-                message=mensaje,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[user.email],
-                fail_silently=True  # No fallar si hay error de red
-            )
-            
-            if resultado > 0:
-                print(f"✅ Correo de reset enviado a {user.email}")
-                logger.info(f"✅ Correo de reset enviado a {user.email}")
-            else:
-                print(f"⚠️ No se pudo enviar correo a {user.email}")
-                logger.warning(f"⚠️ No se pudo enviar correo a {user.email}")
-        except Exception as e:
-            print(f"❌ Error enviando correo de reset: {e}")
-            logger.error(f"❌ Error enviando correo de reset: {e}")
-    
-    email_thread = threading.Thread(target=enviar_correo_reset, daemon=False)
-    email_thread.start()
+    # === AQUI CAMBIAMOS SOLO EL ENVÍO ===
+    from sendgrid import SendGridAPIClient
+    from sendgrid.helpers.mail import Mail
+
+    email_sendgrid = Mail(
+        from_email=settings.EMAIL_HOST_USER,
+        to_emails=user.email,
+        subject=asunto,
+        plain_text_content=mensaje
+    )
+
+    try:
+        sg = SendGridAPIClient(settings.SENDGRID_API_KEY)
+        response = sg.send(email_sendgrid)
+        print("📧 SendGrid enviado:", response.status_code)
+    except Exception as e:
+        print("❌ Error enviando correo SendGrid:", e)
 
     return Response({'message': 'Si el correo existe, recibirás un enlace para restablecer tu contraseña.'}, status=200)
 
@@ -3659,18 +3648,8 @@ Equipo Talento Hub
         if serializer.is_valid():
             entrevista = serializer.save()
 
-            # Enviar correo en background thread (no bloquear respuesta HTTP)
-            import threading
-            def enviar_en_background():
-                try:
-                    self.enviar_correo(entrevista)
-                except Exception as e:
-                    logger.error(f"Error en thread de correo de entrevista: {e}")
-            
-            email_thread = threading.Thread(target=enviar_en_background, daemon=False)
-            email_thread.start()
-            
-            logger.info(f"✅ Entrevista {entrevista.id} creada. Correo enviándose en background.")
+            # Enviar correo automáticamente
+            self.enviar_correo(entrevista)
 
             return Response(serializer.data, status=201)
 
