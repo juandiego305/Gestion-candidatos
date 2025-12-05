@@ -89,21 +89,8 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-from corsheaders.defaults import default_headers
-CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOW_ALL_ORIGINS = True  # Solo para desarrollo, no uses en producción
 CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOWED_ORIGINS = [
-    "https://front-talento-h.vercel.app",
-    "https://gestion-candidatos-4.onrender.com"
-]
-CORS_ALLOW_HEADERS = list(default_headers) + [
-    'access-control-allow-origin',
-]
-CSRF_TRUSTED_ORIGINS = [
-    "https://front-talento-h.vercel.app",
-    "https://gestion-candidatos-3.onrender.com"
-]
-
 
 ROOT_URLCONF = 'gestion_de_candidatos.urls'
 
@@ -184,15 +171,30 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
-# Configuración de email para envío real (Gmail)
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', 'talentohub2025@gmail.com')
-EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', 'ejsu oaiq zivq zdus')
-DEFAULT_FROM_EMAIL = os.getenv('EMAIL_HOST_USER', 'talentohub2025@gmail.com')
-EMAIL_TIMEOUT = 15  # Timeout de 15 segundos para conexión SMTP
+# ============================================
+# CONFIGURACIÓN DE EMAIL (SendGrid + Fallback)
+# ============================================
+
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "talentohub2025@gmail.com")
+
+if SENDGRID_API_KEY:
+    # ---- SENDGRID CONFIG ----
+    EMAIL_BACKEND = "sendgrid_backend.SendgridBackend"
+    SENDGRID_SANDBOX_MODE_IN_DEBUG = False  # desactivar modo sandbox
+    print("✅ SendGrid activado")
+else:
+    # ---- GMAIL CONFIG (solo si no hay SendGrid) ----
+    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+    EMAIL_HOST = "smtp.gmail.com"
+    EMAIL_PORT = 587
+    EMAIL_USE_TLS = True
+    EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "talentohub2025@gmail.com")
+    EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+    print("⚠️ Gmail SMTP usado como respaldo")
+
+EMAIL_TIMEOUT = 30
+
 
 # === Configuración de Supabase ===
 SUPABASE_URL = os.getenv("SUPABASE_URL")

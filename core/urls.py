@@ -51,12 +51,17 @@ urlpatterns = [
     
     # Crear entrevista
     path("api/entrevistas/", EntrevistaView.as_view(), name="crear_entrevista"),
-    # Listar entrevistas por postulacion
-    path("api/entrevistas/postulacion/<int:postulacion_id>/", EntrevistaView.as_view(),
-         name="listar_entrevistas"),
+    
     # Obtener, actualizar o eliminar una entrevista
     path("api/entrevistas/<int:entrevista_id>/", EntrevistaView.as_view(),
          name="entrevista_detalle"),
+    path('api/entrevistas/candidato/<int:candidato_id>/', EntrevistaView.as_view()),
+    path('api/entrevistas/postulacion/<int:postulacion_id>/', EntrevistaView.as_view()),
+    path('api/entrevistas/<int:entrevista_id>/', EntrevistaView.as_view()),
+
+
+     
+     path('correo-prueba/', views.enviar_correo_api, name='enviar_correo_api'),
 
 
 ]

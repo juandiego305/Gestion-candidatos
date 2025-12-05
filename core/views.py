@@ -727,6 +727,8 @@ def mis_vacantes_asignadas(request):
 
     return JsonResponse(out, safe=False, status=200)
 
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
 # ----------------------------
 # Postulacion
 # ----------------------------
@@ -816,84 +818,88 @@ def postular_vacante(request, vacante_id):
         fecha_postulacion=timezone.now()
     )
 
-    # 10) Enviar correo de forma SÍNCRONA con timeout corto (para garantizar envío en producción)
+    # 10) Enviar correo usando SendGrid
     try:
         candidato = postulacion.candidato
         empresa = postulacion.empresa
         vacante_obj = postulacion.vacante
-        
-        print(f"📧 Enviando correo de postulación a {candidato.email}")
-        print(f"📧 EMAIL_HOST_USER configurado: {settings.EMAIL_HOST_USER}")
-        print(f"📧 EMAIL_HOST_PASSWORD configurado: {'Sí' if settings.EMAIL_HOST_PASSWORD else 'NO'}")
-        logger.info(f"📧 Enviando correo de postulación a {candidato.email}")
-        logger.info(f"📧 EMAIL_HOST_USER configurado: {settings.EMAIL_HOST_USER}")
-        logger.info(f"📧 EMAIL_HOST_PASSWORD configurado: {'Sí' if settings.EMAIL_HOST_PASSWORD else 'NO'}")
-        
-        asunto = f"Confirmación de postulación - {vacante_obj.titulo}"
+
+        asunto = f"✅ Confirmación de Postulación - {vacante_obj.titulo} | {empresa.nombre}"
+
         mensaje = f"""Estimado/a {candidato.first_name or candidato.username},
 
-¡Gracias por postularte! Hemos recibido exitosamente tu postulación para la posición de {vacante_obj.titulo} en {empresa.nombre}.
+¡Gracias por tu interés en formar parte de {empresa.nombre}!
 
-📋 CONFIRMACIÓN DE TU POSTULACIÓN:
-- Puesto: {vacante_obj.titulo}
-- Empresa: {empresa.nombre}
-- Fecha: {postulacion.fecha_postulacion.strftime('%d/%m/%Y %H:%M')}
-- Estado: Postulado
-- Modalidad: {vacante_obj.modalidad_trabajo or 'Por definir'}
-- Ubicación: {vacante_obj.ubicacion or 'Por definir'}
+Nos complace confirmar que hemos recibido exitosamente tu postulación para la posición de {vacante_obj.titulo}.
 
-✅ ¿QUÉ SIGUE?
-Tu postulación será revisada por nuestro equipo de Recursos Humanos en los próximos 3-7 días hábiles.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 DETALLES DE TU POSTULACIÓN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-📧 Mantén tu correo y teléfono activos para recibir actualizaciones.
+🏢 Empresa: {empresa.nombre}
+💼 Puesto: {vacante_obj.titulo}
+📅 Fecha de postulación: {postulacion.fecha_postulacion.strftime('%d/%m/%Y a las %H:%M')}
+📍 Ubicación: {vacante_obj.ubicacion or 'Por definir'}
+🏠 Modalidad: {vacante_obj.modalidad_trabajo or 'Por definir'}
+📊 Estado actual: POSTULADO ✓
+🆔 ID de Postulación: #{postulacion.id}
 
-¡Te deseamos mucho éxito!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔄 PRÓXIMOS PASOS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Saludos cordiales,
-Equipo de Recursos Humanos
+1️⃣ Revisión inicial (3-7 días hábiles)
+2️⃣ Evaluación del perfil
+3️⃣ Contacto directo si avanzas en el proceso
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Este es un mensaje automático. Por favor, no responder directamente.
+
+Atentamente,
+Equipo de Gestión de Talento Humano  
 {empresa.nombre}
 
----
-ID de Postulación: {postulacion.id}
+Sistema de Gestión de Candidatos | TalentoHub
+Correo generado el {timezone.now().strftime('%d/%m/%Y a las %H:%M')}
 """
-        
-        from django.core.mail import send_mail
-        resultado = send_mail(
-            subject=asunto,
-            message=mensaje,
+
+        # Construir email
+        email = Mail(
             from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[candidato.email],
-            fail_silently=False
+            to_emails=candidato.email,
+            subject=asunto,
+            plain_text_content=mensaje
         )
-        
-        if resultado > 0:
-            print(f"✅ Correo enviado exitosamente a {candidato.email}")
+
+        # Cliente SendGrid
+        sg = SendGridAPIClient(settings.SENDGRID_API_KEY)
+        response = sg.send(email)
+
+        print(f"📧 SendGrid Response: {response.status_code}")
+
+        if 200 <= response.status_code < 300:
             logger.info(f"✅ Correo enviado exitosamente a {candidato.email}")
-            # Actualizar comentarios
+
             comentario = f"\n[{timezone.now().isoformat()}] Correo de confirmación enviado a {candidato.email}"
             postulacion.comentarios = (postulacion.comentarios or "") + comentario
             postulacion.save(update_fields=["comentarios"])
         else:
-            print(f"⚠️ send_mail retornó 0 para {candidato.email}")
-            logger.warning(f"⚠️ send_mail retornó 0 para {candidato.email}")
-            
-    except Exception as e:
-        print(f"❌ Error enviando correo para postulación {postulacion.id}: {e}")
-        logger.error(f"❌ Error enviando correo para postulación {postulacion.id}: {e}")
-        import traceback
-        print(traceback.format_exc())
-        logger.error(traceback.format_exc())
-        # No fallar la postulación si falla el correo
-    
-    logger.info(f"✅ Postulación {postulacion.id} creada exitosamente")
+            logger.warning(f"⚠️ SendGrid retornó código inesperado: {response.status_code}")
 
-    # 11) Respuesta final INMEDIATA
-    return JsonResponse({
-        "message": "Postulación registrada correctamente. Recibirás un correo de confirmación en breve.",
-        "postulacion_id": postulacion.id,
-        "vacante_id": vacante.id,
-        "cv_url": url_final
-    }, status=201)
+    except Exception as e:
+        logger.error(f"❌ Error enviando correo con SendGrid: {e}")
+
+    return Response(
+    {
+        "message": "Postulación realizada con éxito.",
+        "cv_url": url_final,
+        "estado": "Postulado",
+        "sendgrid": "Correo enviado" if 'response' in locals() and 200 <= response.status_code < 300 else "Falla en envío de correo"
+    },
+    status=201
+)
+
 
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
@@ -1368,118 +1374,599 @@ def actualizar_estado_postulacion(request, postulacion_id):
             candidato = postulacion.candidato
             vacante_obj = postulacion.vacante
             empresa = postulacion.empresa
-            
-            print(f"📧 Enviando correo de cambio a '{nuevo_estado}' para {candidato.email}")
-            print(f"📧 EMAIL_HOST_USER configurado: {settings.EMAIL_HOST_USER}")
-            print(f"📧 EMAIL_HOST_PASSWORD configurado: {'Sí' if settings.EMAIL_HOST_PASSWORD else 'NO'}")
-            logger.info(f"📧 Enviando correo de cambio a '{nuevo_estado}' para {candidato.email}")
-            logger.info(f"📧 EMAIL_HOST_USER configurado: {settings.EMAIL_HOST_USER}")
-            logger.info(f"📧 EMAIL_HOST_PASSWORD configurado: {'Sí' if settings.EMAIL_HOST_PASSWORD else 'NO'}")
-            
+
+            print(f"📧 Enviando correo por SendGrid a '{nuevo_estado}' → {candidato.email}")
+            logger.info(f"📧 Enviando correo por SendGrid a '{nuevo_estado}' → {candidato.email}")
             # Plantillas de correo según estado
             templates = {
                 "En revisión": {
-                    "asunto": f"Tu postulación está en revisión - {vacante_obj.titulo}",
+                    "asunto": f"🔍 Tu postulación está en revisión - {vacante_obj.titulo} | {empresa.nombre}",
                     "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
 
-Tu postulación para {vacante_obj.titulo} en {empresa.nombre} está siendo revisada por nuestro equipo.
+¡Buenas noticias! Tu postulación ha avanzado a la siguiente etapa.
 
-📋 Estado: En revisión
-⏰ Tiempo estimado: 3-5 días hábiles
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 ACTUALIZACIÓN DE ESTADO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Te contactaremos si tu perfil es seleccionado.
-
-Saludos,
-{empresa.nombre}"""
-                },
-                "Entrevista": {
-                    "asunto": f"¡Has sido seleccionado para entrevista! - {vacante_obj.titulo}",
-                    "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
-
-¡Excelentes noticias! Has sido seleccionado/a para una entrevista.
-
-📋 Puesto: {vacante_obj.titulo}
 🏢 Empresa: {empresa.nombre}
+💼 Puesto: {vacante_obj.titulo}
+📍 Ubicación: {vacante_obj.ubicacion or 'Por definir'}
+🔄 Estado actual: EN REVISIÓN 🔍
+📅 Fecha de actualización: {timezone.now().strftime('%d/%m/%Y a las %H:%M')}
+🆔 ID de Postulación: #{postulacion.id}
 
-Nuestro equipo te contactará en las próximas 24-48 horas para coordinar la entrevista.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 ¿QUÉ SIGNIFICA ESTO?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Tu perfil profesional está siendo evaluado detalladamente por nuestro equipo de Recursos Humanos.
+
+Estamos revisando:
+✓ Tu experiencia laboral y trayectoria profesional
+✓ Tus habilidades técnicas y competencias
+✓ Tu formación académica y certificaciones
+✓ La compatibilidad de tu perfil con los requisitos del puesto
+✓ Referencias y recomendaciones (si aplica)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏰ TIEMPOS ESTIMADOS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📆 Duración de revisión: 3 a 5 días hábiles
+🔔 Próxima comunicación: Si tu perfil es seleccionado, te contactaremos directamente
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 MIENTRAS ESPERAS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📱 Mantén activos tus medios de contacto (teléfono y correo)
+📧 Revisa tu bandeja de entrada y spam regularmente
+📄 Ten lista tu documentación actualizada
+🏢 Investiga más sobre {empresa.nombre}, su misión, visión y valores
+💪 Prepárate mentalmente para posibles entrevistas
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Agradecemos tu paciencia durante este proceso. Te mantendremos informado/a sobre cualquier avance.
 
 ¡Mucho éxito!
-{empresa.nombre}"""
+
+Atentamente,
+
+Equipo de Gestión de Talento Humano
+{empresa.nombre}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Sistema de Gestión de Candidatos | TalentoHub
+Correo generado automáticamente el {timezone.now().strftime('%d/%m/%Y a las %H:%M')}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+                },
+                "Entrevista": {
+                    "asunto": f"🎉 ¡Felicitaciones! Has sido seleccionado para entrevista - {vacante_obj.titulo}",
+                    "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
+
+¡EXCELENTES NOTICIAS! 🎊
+
+Tu perfil ha destacado entre los candidatos y hemos decidido continuar con tu proceso de selección.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 ACTUALIZACIÓN DE ESTADO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🏢 Empresa: {empresa.nombre}
+💼 Puesto: {vacante_obj.titulo}
+📍 Ubicación: {vacante_obj.ubicacion or 'Por definir'}
+🏠 Modalidad: {vacante_obj.modalidad_trabajo or 'Por definir'}
+🔄 Estado actual: SELECCIONADO PARA ENTREVISTA ⭐
+📅 Fecha de actualización: {timezone.now().strftime('%d/%m/%Y a las %H:%M')}
+🆔 ID de Postulación: #{postulacion.id}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📞 PRÓXIMOS PASOS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⏰ CONTACTO INMEDIATO
+Nuestro equipo de Recursos Humanos se comunicará contigo en las próximas 24-48 horas para:
+
+✓ Confirmar tu interés y disponibilidad
+✓ Coordinar fecha y hora de la entrevista
+✓ Definir modalidad (presencial, virtual o telefónica)
+✓ Proporcionar detalles sobre el proceso
+✓ Indicar duración estimada de la entrevista
+✓ Presentar a las personas que te entrevistarán
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📝 PREPÁRATE PARA LA ENTREVISTA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🏢 INVESTIGA LA EMPRESA
+• Conoce la historia, misión y visión de {empresa.nombre}
+• Revisa sus productos/servicios principales
+• Identifica sus valores corporativos y cultura organizacional
+• Consulta sus redes sociales y sitio web oficial
+
+💼 PREPARA TU PRESENTACIÓN
+• Repasa tu experiencia laboral más relevante
+• Identifica 3-5 logros profesionales clave
+• Prepara ejemplos concretos de situaciones laborales (método STAR)
+• Ten claro por qué quieres trabajar en {empresa.nombre}
+
+❓ PREPARA PREGUNTAS INTELIGENTES
+• Sobre el puesto y sus responsabilidades
+• Sobre el equipo de trabajo y la cultura
+• Sobre oportunidades de crecimiento profesional
+• Sobre los retos del puesto
+
+📄 DOCUMENTACIÓN REQUERIDA
+• Copia impresa o digital de tu CV actualizado
+• Portafolio de proyectos (si aplica para el puesto)
+• Certificados de estudios y capacitaciones
+• Referencias laborales disponibles
+
+💻 SI ES ENTREVISTA VIRTUAL
+• Verifica tu conexión a internet
+• Prueba tu cámara y micrófono
+• Busca un lugar tranquilo e iluminado
+• Ten instalado Zoom/Teams/Google Meet
+• Viste de manera profesional (incluso si es virtual)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 CONSEJOS CLAVE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✓ Sé puntual (llega 10-15 minutos antes)
+✓ Mantén contacto visual y lenguaje corporal positivo
+✓ Responde con sinceridad y seguridad
+✓ Escucha activamente las preguntas
+✓ Sé tú mismo/a y muestra tu entusiasmo
+✓ Apaga tu teléfono o ponlo en silencio
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Estamos emocionados de conocerte mejor y explorar cómo puedes contribuir a {empresa.nombre}.
+
+¡Te deseamos mucho éxito en tu entrevista!
+
+Atentamente,
+
+Equipo de Gestión de Talento Humano
+{empresa.nombre}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Sistema de Gestión de Candidatos | TalentoHub
+Correo generado automáticamente el {timezone.now().strftime('%d/%m/%Y a las %H:%M')}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
                 },
                 "Proceso de contratacion": {
-                    "asunto": f"¡Felicitaciones! - Proceso de contratación {vacante_obj.titulo}",
+                    "asunto": f"🎊 ¡FELICITACIONES! Iniciamos tu proceso de contratación - {vacante_obj.titulo}",
                     "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
 
-¡Has sido seleccionado/a para {vacante_obj.titulo}!
+¡EXCELENTES NOTICIAS! 🎉🎉🎉
 
-Iniciaremos el proceso de contratación. Por favor, prepara la siguiente documentación:
-- Documento de identidad
-- Hoja de vida actualizada
-- Referencias laborales
-- Certificados de estudios
+Después de un riguroso proceso de selección, nos complace informarte que HAS SIDO SELECCIONADO/A para formar parte de nuestro equipo.
 
-Te contactaremos con los próximos pasos.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌟 ACTUALIZACIÓN DE ESTADO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-¡Bienvenido/a!
-{empresa.nombre}"""
+🏢 Empresa: {empresa.nombre}
+💼 Puesto: {vacante_obj.titulo}
+📍 Ubicación: {vacante_obj.ubicacion or 'Por definir'}
+🏠 Modalidad: {vacante_obj.modalidad_trabajo or 'Por definir'}
+⏰ Jornada: {vacante_obj.tipo_jornada or 'Por definir'}
+💰 Salario: {vacante_obj.salario if vacante_obj.salario else 'Según lo acordado en entrevista'}
+🔄 Estado actual: PROCESO DE CONTRATACIÓN 📋✅
+📅 Fecha de selección: {timezone.now().strftime('%d/%m/%Y a las %H:%M')}
+🆔 ID de Postulación: #{postulacion.id}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 DOCUMENTACIÓN REQUERIDA (URGENTE)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Por favor, reúne y prepara los siguientes documentos ORIGINALES y COPIAS:
+
+📄 IDENTIFICACIÓN PERSONAL
+✓ Documento de identidad vigente (DPI/Cédula/Pasaporte)
+✓ Partida de nacimiento certificada (si aplica)
+✓ 2 fotografías tamaño cédula recientes a color
+
+👨‍🎓 FORMACIÓN ACADÉMICA
+✓ Títulos universitarios certificados
+✓ Diplomas de estudios superiores
+✓ Certificados de capacitaciones y cursos
+✓ Constancias de idiomas (si aplica)
+
+💼 EXPERIENCIA LABORAL
+✓ Cartas de recomendación laboral (mínimo 2)
+✓ Certificados de trabajo de empleos anteriores
+✓ Hoja de vida actualizada y detallada
+
+🏥 DOCUMENTOS MÉDICOS Y LEGALES
+✓ Certificado médico de buena salud (reciente)
+✓ Antecedentes penales actualizados
+✓ Antecedentes policiacos
+✓ Constancia de afiliación al seguro social (si aplica)
+
+🏦 INFORMACIÓN BANCARIA
+✓ Estado de cuenta bancaria reciente
+✓ Número de cuenta para depósitos (si aplica)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📝 PASOS A SEGUIR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PASO 1️⃣: REVISIÓN Y FIRMA DE CONTRATO (Próximos 3-5 días)
+• Recibirás tu contrato de trabajo para revisión
+• Lee cuidadosamente todos los términos y condiciones
+• Consulta cualquier duda antes de firmar
+• Firma y devuelve el contrato en los plazos indicados
+
+PASO 2️⃣: ENTREGA DE DOCUMENTACIÓN (Plazo: 5 días hábiles)
+• Entrega toda la documentación requerida completa
+• Asegúrate de que todas las copias sean legibles
+• Organiza los documentos según la lista proporcionada
+
+PASO 3️⃣: PROCESO DE ONBOARDING
+• Completarás formularios administrativos internos
+• Recibirás información sobre políticas de la empresa
+• Conocerás los beneficios y prestaciones
+
+PASO 4️⃣: INDUCCIÓN CORPORATIVA (Fecha por confirmar)
+• Programa de bienvenida e integración
+• Capacitación sobre sistemas y procesos
+• Presentación del equipo de trabajo
+• Recorrido por las instalaciones
+
+PASO 5️⃣: INICIO DE LABORES
+• Confirmaremos tu fecha de inicio oficial
+• Recibirás tu equipo de trabajo y credenciales
+• Comenzarás tu plan de entrenamiento específico
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏰ PLAZOS IMPORTANTES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🚨 CRÍTICO: Debes entregar toda la documentación dentro de los próximos 5 DÍAS HÁBILES para no retrasar tu proceso de incorporación.
+
+Si tienes dificultades para conseguir algún documento, comunícate inmediatamente con RRHH.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📞 CONTACTO Y SEGUIMIENTO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Para cualquier consulta, duda o información adicional:
+
+📧 Responde a este correo electrónico
+📱 Contacta al Departamento de Recursos Humanos de {empresa.nombre}
+⏰ Horario de atención: Lunes a Viernes, 8:00 AM - 5:00 PM
+
+Nuestro equipo está disponible para apoyarte en todo el proceso.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+¡Bienvenido/a a la familia {empresa.nombre}!
+
+Estamos emocionados de que comiences esta nueva etapa profesional con nosotros. Tu talento, experiencia y dedicación serán fundamentales para alcanzar nuestros objetivos.
+
+Confiamos en que esta será una relación laboral exitosa y mutuamente beneficiosa.
+
+¡Nos vemos pronto!
+
+Atentamente,
+
+Equipo de Gestión de Talento Humano
+{empresa.nombre}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Sistema de Gestión de Candidatos | TalentoHub
+Correo generado automáticamente el {timezone.now().strftime('%d/%m/%Y a las %H:%M')}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
                 },
                 "Contratado": {
-                    "asunto": f"¡Bienvenido/a al equipo! - {empresa.nombre}",
+                    "asunto": f"🎉 ¡BIENVENIDO/A AL EQUIPO! Tu contratación está completa - {empresa.nombre}",
                     "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
 
-¡Felicitaciones! Tu contratación ha sido completada.
+🎊 ¡FELICITACIONES! 🎊
 
-🎉 Bienvenido/a a {empresa.nombre}
+Tu proceso de contratación ha sido completado exitosamente. Oficialmente eres parte del equipo de {empresa.nombre}.
 
-Nuestro equipo te contactará para coordinar tu fecha de inicio e inducción.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌟 CONFIRMACIÓN DE CONTRATACIÓN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-¡Estamos emocionados de tenerte con nosotros!
+🎉 BIENVENIDO/A A {empresa.nombre.upper()} 🎉
 
-{empresa.nombre}"""
+🏢 Empresa: {empresa.nombre}
+💼 Tu puesto: {vacante_obj.titulo}
+📍 Ubicación: {vacante_obj.ubicacion or 'Por definir'}
+🏠 Modalidad: {vacante_obj.modalidad_trabajo or 'Por definir'}
+⏰ Jornada laboral: {vacante_obj.tipo_jornada or 'Por definir'}
+🔄 Estado: CONTRATADO ✅
+📅 Fecha de contratación: {timezone.now().strftime('%d/%m/%Y a las %H:%M')}
+🆔 ID de Empleado: Por asignar por RRHH
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📅 INICIO DE LABORES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Nuestro equipo de Recursos Humanos se comunicará contigo en las PRÓXIMAS HORAS para:
+
+✓ Confirmar tu fecha exacta de inicio
+✓ Coordinar tu sesión de inducción corporativa
+✓ Entregarte credenciales y accesos a sistemas
+✓ Asignarte tu equipo de trabajo (computadora, teléfono, etc.)
+✓ Presentarte oficialmente a tu equipo de trabajo
+✓ Programar tu recorrido por las instalaciones
+✓ Entregarte tu contrato firmado y documentación oficial
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 TU PRIMER DÍA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PROGRAMA DE INDUCCIÓN INTEGRAL:
+
+🏢 BIENVENIDA CORPORATIVA (9:00 AM)
+• Recepción oficial por parte del equipo de RRHH
+• Presentación de la empresa, historia y valores
+• Entrega de kit de bienvenida
+• Firma de documentos finales
+
+👥 INTEGRACIÓN AL EQUIPO (10:30 AM)
+• Presentación con tu jefe inmediato
+• Conoce a tus compañeros de equipo
+• Tour por tu área de trabajo
+• Asignación de tu espacio laboral
+
+💻 CONFIGURACIÓN TECNOLÓGICA (12:00 PM)
+• Entrega de equipo de cómputo y herramientas
+• Creación de cuentas y credenciales
+• Capacitación en sistemas internos
+• Acceso a plataformas corporativas
+
+🎓 CAPACITACIÓN INICIAL (2:00 PM)
+• Políticas y procedimientos internos
+• Normas de seguridad y salud ocupacional
+• Beneficios y prestaciones de ley
+• Código de conducta y ética profesional
+
+📍 RECORRIDO GENERAL (4:00 PM)
+• Conoce todas las instalaciones
+• Ubicación de áreas importantes
+• Presentación con otros departamentos
+• Información sobre servicios disponibles
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💼 DOCUMENTACIÓN IMPORTANTE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Asegúrate de tener lista y COMPLETA la siguiente documentación para tu primer día:
+
+✓ Documento de identidad original
+✓ Fotos tamaño cédula (2 adicionales)
+✓ Comprobante de domicilio reciente
+✓ Documentación académica certificada
+✓ Certificado médico de buena salud
+✓ Referencias laborales originales
+✓ Cualquier otro documento pendiente
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 EXPECTATIVAS Y OBJETIVOS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Durante tus primeras semanas en {empresa.nombre}:
+
+SEMANA 1-2: ADAPTACIÓN
+• Conocer procesos y metodologías de trabajo
+• Familiarizarte con herramientas y sistemas
+• Establecer relaciones con tu equipo
+• Comprender tu rol y responsabilidades
+
+SEMANA 3-4: INTEGRACIÓN
+• Participar activamente en proyectos
+• Aplicar conocimientos adquiridos
+• Comenzar a generar resultados
+• Recibir retroalimentación constante
+
+MES 2-3: PRODUCTIVIDAD
+• Trabajar de manera autónoma
+• Contribuir significativamente al equipo
+• Proponer mejoras e innovaciones
+• Alcanzar objetivos establecidos
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 CONSEJOS PARA TU ÉXITO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✓ Sé puntual desde el primer día
+✓ Mantén una actitud positiva y proactiva
+✓ Haz preguntas cuando tengas dudas
+✓ Toma notas durante las capacitaciones
+✓ Conoce y respeta la cultura organizacional
+✓ Sé amable y respetuoso con todos
+✓ Demuestra tu compromiso y profesionalismo
+✓ Aprende continuamente y adapta-te rápido
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📞 CONTACTO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Para cualquier consulta antes de tu inicio:
+
+📧 Responde a este correo
+📱 Contacta a Recursos Humanos
+⏰ Disponibilidad: Lunes a Viernes, 8:00 AM - 5:00 PM
+
+Estamos aquí para apoyarte en tu integración.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{candidato.first_name}, estamos verdaderamente emocionados de tenerte en nuestro equipo. Tu experiencia, habilidades y talento serán un gran aporte para {empresa.nombre}.
+
+Confiamos en que esta será una relación laboral exitosa, productiva y llena de crecimiento profesional.
+
+¡Bienvenido/a a la familia {empresa.nombre}!
+
+¡Nos vemos muy pronto!
+
+Con entusiasmo,
+
+Equipo de Gestión de Talento Humano
+{empresa.nombre}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Sistema de Gestión de Candidatos | TalentoHub
+Correo generado automáticamente el {timezone.now().strftime('%d/%m/%Y a las %H:%M')}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
                 },
                 "Rechazado": {
-                    "asunto": f"Actualización sobre tu postulación - {vacante_obj.titulo}",
+                    "asunto": f"Actualización sobre tu postulación - {vacante_obj.titulo} | {empresa.nombre}",
                     "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
 
-Gracias por tu interés en {vacante_obj.titulo} en {empresa.nombre}.
+Esperamos que te encuentres muy bien.
 
-Después de una cuidadosa evaluación, hemos decidido continuar con otros candidatos en esta ocasión.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 ACTUALIZACIÓN DE TU POSTULACIÓN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🔄 Te invitamos a postularte a futuras vacantes que se ajusten a tu perfil.
+🏢 Empresa: {empresa.nombre}
+💼 Puesto aplicado: {vacante_obj.titulo}
+📅 Fecha de postulación: {postulacion.fecha_postulacion.strftime('%d/%m/%Y')}
+📅 Fecha de esta actualización: {timezone.now().strftime('%d/%m/%Y a las %H:%M')}
+🆔 ID de Postulación: #{postulacion.id}
 
-Te deseamos mucho éxito en tu búsqueda laboral.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💬 RESULTADO DEL PROCESO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Saludos,
-{empresa.nombre}"""
+Queremos agradecerte sinceramente por tu interés en formar parte de {empresa.nombre} y por el tiempo que dedicaste a nuestro proceso de selección.
+
+Después de una cuidadosa y exhaustiva evaluación de todos los candidatos, hemos tomado la difícil decisión de continuar con otros perfiles cuya experiencia y habilidades se ajustan de manera más específica a los requisitos particulares de esta posición.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 IMPORTANTE: ESTA NO ES UNA EVALUACIÓN DE TU VALOR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Queremos enfatizar que esta decisión NO refleja tu valor como profesional ni cuestiona tus capacidades y competencias.
+
+El proceso de selección involucra múltiples factores:
+• Requisitos muy específicos del puesto
+• Experiencia en áreas particulares
+• Disponibilidad inmediata
+• Compatibilidad cultural y organizacional
+• Nivel de especialización requerido
+• Presupuesto y estructura salarial
+• Necesidades estratégicas del momento
+
+En ocasiones, la decisión se basa en detalles muy específicos que no necesariamente reflejan la calidad de tu perfil profesional.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔄 FUTURAS OPORTUNIDADES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+¡No pierdas el ánimo! Valoramos tu perfil y queremos que sepas que:
+
+✓ TU PERFIL PERMANECE ACTIVO en nuestra base de datos de talento
+✓ Serás CONSIDERADO AUTOMÁTICAMENTE para futuras vacantes que coincidan con tu experiencia
+✓ Te INVITAMOS a postularte nuevamente a otras posiciones que publiquemos
+✓ Mantendremos TU INFORMACIÓN actualizada por 12 meses
+✓ Podrás ACTUALIZAR tu perfil en cualquier momento
+
+Te animamos a:
+• Revisar regularmente nuestras ofertas de empleo
+• Seguirnos en redes sociales profesionales
+• Visitar nuestro portal de carreras
+• Mantenerte atento a nuevas oportunidades
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📈 RECOMENDACIONES PARA TU DESARROLLO PROFESIONAL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Mientras continúas tu búsqueda laboral, te sugerimos:
+
+🎓 FORMACIÓN CONTINUA
+• Actualiza tus conocimientos técnicos
+• Obtén certificaciones reconocidas en tu área
+• Participa en cursos y talleres especializados
+• Aprende nuevas tecnologías y herramientas
+
+💼 DESARROLLO DE HABILIDADES
+• Fortalece tus soft skills (comunicación, liderazgo, trabajo en equipo)
+• Desarrolla habilidades digitales
+• Mejora tu dominio de idiomas
+• Practica entrevistas y presentaciones
+
+📄 OPTIMIZA TU PERFIL PROFESIONAL
+• Actualiza constantemente tu CV y portafolio
+• Mantén activo tu perfil en LinkedIn y otras plataformas
+• Solicita recomendaciones de empleadores anteriores
+• Documenta tus logros y proyectos exitosos
+
+🌐 NETWORKING
+• Asiste a eventos profesionales de tu sector
+• Conecta con profesionales de tu área
+• Participa en comunidades y grupos especializados
+• Mantén relaciones profesionales activas
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🙏 NUESTRO AGRADECIMIENTO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Valoramos profundamente:
+• El tiempo que invertiste en nuestro proceso
+• Tu interés genuino en {empresa.nombre}
+• La información y documentación que compartiste
+• Tu profesionalismo durante todo el proceso
+
+Fue un placer conocer tu trayectoria y perfil profesional.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{candidato.first_name}, te deseamos el mayor de los éxitos en tu búsqueda laboral y en todos tus proyectos profesionales futuros.
+
+Estamos seguros de que encontrarás una excelente oportunidad donde tu talento, experiencia y dedicación serán plenamente aprovechados y valorados.
+
+Las puertas de {empresa.nombre} permanecen abiertas para futuras oportunidades.
+
+¡Mucho éxito!
+
+Con los mejores deseos,
+
+Equipo de Gestión de Talento Humano
+{empresa.nombre}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Sistema de Gestión de Candidatos | TalentoHub
+Correo generado automáticamente el {timezone.now().strftime('%d/%m/%Y a las %H:%M')}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
                 }
             }
             
             template = templates.get(nuevo_estado)
             
             if template:
-                from django.core.mail import send_mail
-                resultado = send_mail(
-                    subject=template["asunto"],
-                    message=template["mensaje"],
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[candidato.email],
-                    fail_silently=False
-                )
-                
-                if resultado > 0:
-                    print(f"✅ Correo '{nuevo_estado}' enviado a {candidato.email}")
-                    logger.info(f"✅ Correo '{nuevo_estado}' enviado a {candidato.email}")
-                    # Actualizar comentarios
-                    comentario = f"\n[{timezone.now().isoformat()}] Correo '{nuevo_estado}' enviado a {candidato.email}"
-                    postulacion.comentarios = (postulacion.comentarios or "") + comentario
-                    postulacion.save(update_fields=["comentarios"])
-                else:
-                    print(f"⚠️ send_mail retornó 0 para {candidato.email}")
-                    logger.warning(f"⚠️ send_mail retornó 0 para {candidato.email}")
-            else:
-                print(f"ℹ️ No hay plantilla de correo para estado '{nuevo_estado}'")
-                logger.info(f"ℹ️ No hay plantilla de correo para estado '{nuevo_estado}'")
-                
+               from sendgrid import SendGridAPIClient
+               from sendgrid.helpers.mail import Mail
+
+               email = Mail(
+                   from_email=settings.DEFAULT_FROM_EMAIL,
+                   to_emails=candidato.email,
+                   subject=template["asunto"],
+                   plain_text_content=template["mensaje"]
+)
+
+               try:
+                   sg = SendGridAPIClient(settings.SENDGRID_API_KEY)
+                   response = sg.send(email)
+                   logger.info(f"📧 SendGrid enviado: {response.status_code}")
+               except Exception as e:
+                   logger.error(f"❌ Error enviando correo SendGrid: {e}")
+                    
         except Exception as e:
             print(f"❌ Error enviando correo de estado '{nuevo_estado}': {e}")
             logger.error(f"❌ Error enviando correo de estado '{nuevo_estado}': {e}")
@@ -2071,10 +2558,10 @@ def solicitar_reset_password(request):
     token = default_token_generator.make_token(user)
     uid = urlsafe_base64_encode(force_bytes(user.pk))
 
-    # Construir enlace (ajusta el dominio según tu configuración)
-    reset_link = f"http://tu-dominio.com/reset-password/{uid}/{token}/"
+    # Construir enlace
+    reset_link = f"http://localhost:3000/reset-password/{uid}/{token}/"
 
-    # Enviar correo
+    # Enviar correo con SendGrid
     asunto = 'Restablecer tu contraseña'
     mensaje = f"""
 Hola {user.username},
@@ -2090,13 +2577,23 @@ Saludos,
 Equipo de Soporte
 """
 
-    send_mail(
+    # === AQUI CAMBIAMOS SOLO EL ENVÍO ===
+    from sendgrid import SendGridAPIClient
+    from sendgrid.helpers.mail import Mail
+
+    email_sendgrid = Mail(
+        from_email=settings.EMAIL_HOST_USER,
+        to_emails=user.email,
         subject=asunto,
-        message=mensaje,
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[user.email],
-        fail_silently=True,
+        plain_text_content=mensaje
     )
+
+    try:
+        sg = SendGridAPIClient(settings.SENDGRID_API_KEY)
+        response = sg.send(email_sendgrid)
+        print("📧 SendGrid enviado:", response.status_code)
+    except Exception as e:
+        print("❌ Error enviando correo SendGrid:", e)
 
     return Response({'message': 'Si el correo existe, recibirás un enlace para restablecer tu contraseña.'}, status=200)
 
@@ -2749,7 +3246,7 @@ class PasswordResetRequestView(APIView):
             user = User.objects.get(email=email)
             token = default_token_generator.make_token(user)
             uid = urlsafe_base64_encode(force_bytes(user.pk))
-            reset_link = f"https://gestion-candidatos-3.onrender.com/reset-password/{uid}/{token}/"
+            reset_link = f"http://localhost:3000/reset-password/{uid}/{token}/"
 
             send_mail(
                 subject="Resetear contraseña",
@@ -3063,6 +3560,11 @@ class FavoritosView(APIView):
 # ----------------------------
 # Entrevistas
 # ----------------------------
+import logging
+from datetime import datetime, timedelta
+from django.core.mail import EmailMessage
+logger = logging.getLogger(__name__)
+
 class EntrevistaView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -3070,14 +3572,9 @@ class EntrevistaView(APIView):
     # Generar archivo .ics
     # ----------------------------
     def generar_ics(self, entrevista):
-
-        # formatear fecha y hora inicio
         start = entrevista.fecha.strftime("%Y%m%d") + "T" + entrevista.hora.strftime("%H%M%S")
-
-        # duración predeterminada 1 hora
-        from datetime import datetime, timedelta
-        end_time = datetime.combine(entrevista.fecha, entrevista.hora) + timedelta(hours=1)
-        end = end_time.strftime("%Y%m%dT%H%M%S")
+        end_dt = datetime.combine(entrevista.fecha, entrevista.hora) + timedelta(hours=1)
+        end = end_dt.strftime("%Y%m%dT%H%M%S")
 
         return f"""BEGIN:VCALENDAR
 VERSION:2.0
@@ -3088,7 +3585,7 @@ BEGIN:VEVENT
 DTSTART:{start}
 DTEND:{end}
 SUMMARY:Entrevista – Talento Hub
-DESCRIPTION:{entrevista.descripcion}\\nLink reunión: {entrevista.medio}
+DESCRIPTION:{entrevista.descripcion}\\nLink: {entrevista.medio}
 LOCATION:{entrevista.medio}
 STATUS:CONFIRMED
 END:VEVENT
@@ -3096,60 +3593,54 @@ END:VCALENDAR
 """
 
     # ----------------------------
-    # Enviar correo
+    # Enviar correo solo texto (SendGrid)
     # ----------------------------
     def enviar_correo(self, entrevista):
-        asunto = "Entrevista Programada – Talento Hub"
+        try:
+            asunto = "Entrevista Programada – Talento Hub"
 
-        mensaje = f"""
-Hola {entrevista.postulacion.candidato.first_name},
+            candidato = entrevista.postulacion.candidato
+            correo_destino = candidato.email
 
-Tu entrevista ha sido agendada:
+            mensaje = f"""
+Hola {candidato.first_name},
 
-📅 Fecha: {entrevista.fecha}
-🕒 Hora: {entrevista.hora}
-🔗 Reunión: {entrevista.medio}
+Tu entrevista ha sido programada exitosamente.
 
-Adjunto encontrarás la invitación para agregarla a tu Calendar.
+Fecha: {entrevista.fecha}
+Hora: {entrevista.hora}
+Reunión: {entrevista.medio}
+
+Se adjunta archivo .ics para agregar la entrevista a tu calendario.
 
 Saludos,
 Equipo Talento Hub
 """
 
-        # correo del candidato
-        correo_destino = entrevista.postulacion.candidato.email
+            email = EmailMessage(
+                subject=asunto,
+                body=mensaje,
+                from_email=settings.DEFAULT_FROM_EMAIL,  # SendGrid remitente
+                to=[correo_destino],
+                headers={
+                    "X-TalentoHub-ID": "Entrevista-Programada",
+                    "List-Unsubscribe": "<mailto:noreply@talentohub.com>",
+                }
+            )
 
-        from django.core.mail import EmailMessage
+            # Adjuntar ICS
+            archivo_ics = self.generar_ics(entrevista)
+            email.attach("entrevista.ics", archivo_ics, "text/calendar")
 
-        email = EmailMessage(
-            asunto,
-            mensaje,
-            "no-reply@talentohub.com",  # cambia si quieres
-            [correo_destino]
-        )
+            email.send(fail_silently=False)
+            logger.info(f"Correo enviado a {correo_destino}")
 
-        # adjuntar archivo ICS
-        archivo_ics = self.generar_ics(entrevista)
-        email.attach("entrevista.ics", archivo_ics, "text/calendar")
-
-        email.send()
-
-    # ----------------------------
-    # GET → listar por postulacion o traer 1 entrevista
-    # ----------------------------
-    def get(self, request, postulacion_id=None, entrevista_id=None):
-
-        if postulacion_id:
-            entrevistas = Entrevista.objects.filter(postulacion_id=postulacion_id)
-            serializer = EntrevistaSerializer(entrevistas, many=True)
-            return Response(serializer.data)
-
-        entrevista = get_object_or_404(Entrevista, id=entrevista_id)
-        serializer = EntrevistaSerializer(entrevista)
-        return Response(serializer.data)
+        except Exception as e:
+            logger.error(f"Error enviando correo: {e}")
+            print(f"❌ Error enviando correo: {e}")
 
     # ----------------------------
-    # POST → crear una entrevista (MEJORADO)
+    # POST → Crear entrevista
     # ----------------------------
     def post(self, request):
         serializer = EntrevistaSerializer(data=request.data)
@@ -3157,13 +3648,37 @@ Equipo Talento Hub
         if serializer.is_valid():
             entrevista = serializer.save()
 
-            # enviar correo automático
+            # Enviar correo automáticamente
             self.enviar_correo(entrevista)
 
             return Response(serializer.data, status=201)
 
         return Response(serializer.errors, status=400)
 
+
+    def get(self, request, postulacion_id=None, entrevista_id=None, candidato_id=None):
+
+        # Obtener entrevistas por candidato
+            if candidato_id:
+                postulaciones = Postulacion.objects.filter(candidato_id=candidato_id)
+                entrevistas = Entrevista.objects.filter(postulacion__in=postulaciones)
+                serializer = EntrevistaSerializer(entrevistas, many=True)
+                return Response(serializer.data)
+
+        # Obtener entrevistas por postulación
+            if postulacion_id:
+                entrevistas = Entrevista.objects.filter(postulacion_id=postulacion_id)
+                serializer = EntrevistaSerializer(entrevistas, many=True)
+                return Response(serializer.data)
+
+        # Obtener una sola entrevista
+            if entrevista_id:
+                entrevista = get_object_or_404(Entrevista, id=entrevista_id)
+                serializer = EntrevistaSerializer(entrevista)
+                return Response(serializer.data)
+
+            return Response({"error": "Debes enviar un identificador"}, status=400)
+    
     # ----------------------------
     # PUT
     # ----------------------------
@@ -3197,3 +3712,31 @@ Equipo Talento Hub
         entrevista = get_object_or_404(Entrevista, id=entrevista_id)
         entrevista.delete()
         return Response(status=204)
+
+import json
+from django.views.decorators.csrf import csrf_exempt
+
+@csrf_exempt
+def enviar_correo_api(request):
+    if request.method == "POST":
+        data = json.loads(request.body.decode("utf-8"))
+
+        destinatario = data.get("email")
+
+        if not destinatario:
+            return JsonResponse({"error": "Falta el email"}, status=400)
+
+        try:
+            send_mail(
+                subject="Correo de prueba desde API",
+                message="Hola, Aquí tienes la información solicitada. Gracias por usar nuestro sistema. Saludos, Equipo TalentoHub",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[destinatario],
+                fail_silently=False,
+            )
+
+            return JsonResponse({"mensaje": "Correo enviado correctamente"})
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+    return JsonResponse({"error": "Método no permitido"}, status=405)
