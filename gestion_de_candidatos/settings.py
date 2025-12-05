@@ -179,10 +179,14 @@ SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "talentohub2025@gmail.com")
 
 if SENDGRID_API_KEY:
-    # ---- SENDGRID CONFIG ----
-    EMAIL_BACKEND = "sendgrid_backend.SendgridBackend"
-    SENDGRID_SANDBOX_MODE_IN_DEBUG = False  # desactivar modo sandbox
-    print("✅ SendGrid activado")
+    # ---- SENDGRID SMTP CONFIG ----
+    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+    EMAIL_HOST = "smtp.sendgrid.net"
+    EMAIL_PORT = 587
+    EMAIL_USE_TLS = True
+    EMAIL_HOST_USER = "apikey"  # Siempre es 'apikey' para SendGrid
+    EMAIL_HOST_PASSWORD = SENDGRID_API_KEY  # Tu API Key de SendGrid
+    print("✅ SendGrid SMTP activado")
 else:
     # ---- GMAIL CONFIG (solo si no hay SendGrid) ----
     EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
