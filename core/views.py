@@ -3648,8 +3648,18 @@ Equipo Talento Hub
         if serializer.is_valid():
             entrevista = serializer.save()
 
-            # Enviar correo automáticamente
-            self.enviar_correo(entrevista)
+            # Enviar correo en background thread (no bloquear respuesta HTTP)
+            import threading
+            def enviar_en_background():
+                try:
+                    self.enviar_correo(entrevista)
+                except Exception as e:
+                    logger.error(f"Error en thread de correo de entrevista: {e}")
+            
+            email_thread = threading.Thread(target=enviar_en_background, daemon=False)
+            email_thread.start()
+            
+            logger.info(f"✅ Entrevista {entrevista.id} creada. Correo enviándose en background.")
 
             return Response(serializer.data, status=201)
 
