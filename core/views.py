@@ -2528,76 +2528,9 @@ def perfil_candidato(request, candidato_id):
     serializer = PerfilUsuarioSerializer(candidato)
     return Response(serializer.data)
 
-
 # ----------------------------
-# Password Reset
+# Restablecimiento de contraseña        
 # ----------------------------
-@api_view(['POST'])
-@permission_classes([permissions.AllowAny])
-def solicitar_reset_password(request):
-    """
-    Permite solicitar un enlace para restablecer contraseña.
-
-    Body esperado:
-    {
-        "email": "usuario@ejemplo.com"
-    }
-    """
-    email = request.data.get('email')
-
-    if not email:
-        return Response({'error': 'Debe enviar el campo "email".'}, status=400)
-
-    try:
-        user = User.objects.get(email=email)
-    except User.DoesNotExist:
-        # Por seguridad, no revelar si el email existe o no
-        return Response({'message': 'Si el correo existe, recibirás un enlace para restablecer tu contraseña.'}, status=200)
-
-    # Generar token de reset
-    token = default_token_generator.make_token(user)
-    uid = urlsafe_base64_encode(force_bytes(user.pk))
-
-    # Construir enlace
-    reset_link = f"https://front-talento-h.vercel.app/reset-password/{uid}/{token}/"
-
-    # Enviar correo con SendGrid
-    asunto = 'Restablecer tu contraseña'
-    mensaje = f"""
-Hola {user.username},
-
-Hemos recibido una solicitud para restablecer tu contraseña.
-
-Si fuiste tú, haz clic en el siguiente enlace:
-{reset_link}
-
-Si no solicitaste esto, ignora este correo.
-
-Saludos,
-Equipo de Soporte
-"""
-
-    # === AQUI CAMBIAMOS SOLO EL ENVÍO ===
-    from sendgrid import SendGridAPIClient
-    from sendgrid.helpers.mail import Mail
-
-    email_sendgrid = Mail(
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        to_emails=user.email,
-        subject=asunto,
-        plain_text_content=mensaje
-    )
-
-    try:
-        sg = SendGridAPIClient(settings.SENDGRID_API_KEY)
-        response = sg.send(email_sendgrid)
-        print("📧 SendGrid enviado:", response.status_code)
-    except Exception as e:
-        print("❌ Error enviando correo SendGrid:", e)
-
-    return Response({'message': 'Si el correo existe, recibirás un enlace para restablecer tu contraseña.'}, status=200)
-
-
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
 def reset_password_confirm(request):
@@ -3240,24 +3173,60 @@ class PasswordResetRequestView(APIView):
 
     def post(self, request):
         email = request.data.get("email")
+
         if not email:
             return Response({"error": "Debe enviar un correo"}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
             user = User.objects.get(email=email)
-            token = default_token_generator.make_token(user)
-            uid = urlsafe_base64_encode(force_bytes(user.pk))
-            reset_link = f"http://localhost:3000/reset-password/{uid}/{token}/"
-
-            send_mail(
-                subject="Resetear contraseña",
-                message=f"Usa este enlace para resetear tu contraseña: {reset_link}",
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[email],
-                fail_silently=False,
-            )
-            return Response({"message": "Correo enviado correctamente"})
         except User.DoesNotExist:
-            return Response({"error": "Usuario no encontrado"}, status=status.HTTP_404_NOT_FOUND)
+            # No revelar si el email existe o no
+            return Response({"message": "Si el correo existe, recibirás un enlace para restablecer tu contraseña."}, 
+                            status=status.HTTP_200_OK)
+
+        # Generar token y UID
+        token = default_token_generator.make_token(user)
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+
+        # Cambia esto por el dominio real de tu frontend
+        FRONTEND_URL = "https://front-talento-h.vercel.app/"
+
+        reset_link = f"{FRONTEND_URL}/reset-password/{uid}/{token}/"
+
+        # Contenido del correo
+        asunto = "Restablecer tu contraseña"
+        mensaje = f"""
+Hola {user.username},
+
+Recibimos una solicitud para restablecer tu contraseña.
+
+Haz clic en el enlace para continuar:
+{reset_link}
+
+Si tú no solicitaste esto, simplemente ignora este mensaje.
+
+Saludos,
+Equipo Talento Hub
+"""
+
+        # Preparar correo SendGrid
+        email_sendgrid = Mail(
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            to_emails=email,
+            subject=asunto,
+            plain_text_content=mensaje
+        )
+
+        try:
+            sg = SendGridAPIClient(settings.SENDGRID_API_KEY)
+            response = sg.send(email_sendgrid)
+            print("📧 SendGrid enviado:", response.status_code)
+        except Exception as e:
+            print("❌ Error enviando correo con SendGrid:", e)
+            return Response({"error": "Error enviando correo"}, status=500)
+
+        return Response({"message": "Si el correo existe, recibirás un enlace para restablecer tu contraseña."},
+                     status=status.HTTP_200_OK)
         
         
 class PasswordResetConfirmView(APIView):
@@ -3632,7 +3601,7 @@ Equipo Talento Hub
             archivo_ics = self.generar_ics(entrevista)
             email.attach("entrevista.ics", archivo_ics, "text/calendar")
 
-            email.send(fail_silently=False)
+            email.send()
             logger.info(f"Correo enviado a {correo_destino}")
 
         except Exception as e:
