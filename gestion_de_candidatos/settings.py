@@ -172,31 +172,29 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 # ============================================
-# CONFIGURACIÓN DE EMAIL (SendGrid + Fallback)
+# CONFIGURACIÓN DE EMAIL CON SENDGRID
 # ============================================
 
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
-DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "talentohub2025@gmail.com")
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL")
 
-if SENDGRID_API_KEY:
-    # ---- SENDGRID CONFIG ----
-    EMAIL_BACKEND = "sendgrid_backend.SendgridBackend"
-    SENDGRID_SANDBOX_MODE_IN_DEBUG = False  # desactivar modo sandbox
-    print("✅ SendGrid activado")
-else:
-    # ---- GMAIL CONFIG (solo si no hay SendGrid) ----
-    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-    EMAIL_HOST = "smtp.gmail.com"
-    EMAIL_PORT = 587
-    EMAIL_USE_TLS = True
-    EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "talentohub2025@gmail.com")
-    EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
-    print("⚠️ Gmail SMTP usado como respaldo")
+# Backend de SendGrid
+EMAIL_BACKEND = "sendgrid_backend.SendgridBackend"
+SENDGRID_SANDBOX_MODE_IN_DEBUG = False  # Desactivar sandbox en modo debug
 
-EMAIL_TIMEOUT = 30
+# Configuración SMTP para asegurar compatibilidad
+EMAIL_HOST = "smtp.sendgrid.net"
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = "apikey"  # Esto SIEMPRE debe ser "apikey"
+EMAIL_HOST_PASSWORD = SENDGRID_API_KEY
+
+print("✅ SendGrid activado correctamente")
+
 
 
 # === Configuración de Supabase ===
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+
 

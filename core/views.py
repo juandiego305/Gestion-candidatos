@@ -2559,7 +2559,7 @@ def solicitar_reset_password(request):
     uid = urlsafe_base64_encode(force_bytes(user.pk))
 
     # Construir enlace
-    reset_link = f"http://localhost:3000/reset-password/{uid}/{token}/"
+    reset_link = f"https://front-talento-h.vercel.app/reset-password/{uid}/{token}/"
 
     # Enviar correo con SendGrid
     asunto = 'Restablecer tu contraseña'
@@ -2582,7 +2582,7 @@ Equipo de Soporte
     from sendgrid.helpers.mail import Mail
 
     email_sendgrid = Mail(
-        from_email=settings.EMAIL_HOST_USER,
+        from_email=settings.DEFAULT_FROM_EMAIL,
         to_emails=user.email,
         subject=asunto,
         plain_text_content=mensaje
@@ -3713,30 +3713,4 @@ Equipo Talento Hub
         entrevista.delete()
         return Response(status=204)
 
-import json
-from django.views.decorators.csrf import csrf_exempt
 
-@csrf_exempt
-def enviar_correo_api(request):
-    if request.method == "POST":
-        data = json.loads(request.body.decode("utf-8"))
-
-        destinatario = data.get("email")
-
-        if not destinatario:
-            return JsonResponse({"error": "Falta el email"}, status=400)
-
-        try:
-            send_mail(
-                subject="Correo de prueba desde API",
-                message="Hola, Aquí tienes la información solicitada. Gracias por usar nuestro sistema. Saludos, Equipo TalentoHub",
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[destinatario],
-                fail_silently=False,
-            )
-
-            return JsonResponse({"mensaje": "Correo enviado correctamente"})
-        except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
-
-    return JsonResponse({"error": "Método no permitido"}, status=405)

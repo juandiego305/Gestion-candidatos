@@ -60,9 +60,5 @@ urlpatterns = [
     path('api/entrevistas/<int:entrevista_id>/', EntrevistaView.as_view()),
 
 
-     
-     path('correo-prueba/', views.enviar_correo_api, name='enviar_correo_api'),
-
-
 ]
 
