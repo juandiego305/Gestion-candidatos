@@ -3532,7 +3532,7 @@ from sendgrid.helpers.mail import Mail, Attachment
 import base64
 from datetime import datetime, timedelta
 from django.core.mail import EmailMessage
-logger = logging.getLogger(_name_)
+logger = logging.getLogger(__name__)
 
 class EntrevistaView(APIView):
     permission_classes = [IsAuthenticated]
