@@ -176,20 +176,21 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # ============================================
 
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
-DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL")
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "talentohub2025@gmail.com")
 
-# Backend de SendGrid
-EMAIL_BACKEND = "sendgrid_backend.SendgridBackend"
-SENDGRID_SANDBOX_MODE_IN_DEBUG = False  # Desactivar sandbox en modo debug
+# Backend SMTP (NO usar sendgrid_backend)
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 
-# Configuración SMTP para asegurar compatibilidad
+# Configuración SMTP de SendGrid
 EMAIL_HOST = "smtp.sendgrid.net"
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = "apikey"  # Esto SIEMPRE debe ser "apikey"
+EMAIL_HOST_USER = "apikey"  # Fijo, no cambia nunca
 EMAIL_HOST_PASSWORD = SENDGRID_API_KEY
 
-print("✅ SendGrid activado correctamente")
+EMAIL_TIMEOUT = 30
+
+print("✅ SendGrid SMTP activado correctamente")
 
 
 
