@@ -1,4 +1,5 @@
 # core/views.py
+import threading
 from django.http import HttpResponse
 from django.contrib.auth import get_user_model
 from rest_framework import viewsets, permissions, status
@@ -3189,7 +3190,7 @@ class PasswordResetRequestView(APIView):
         uid = urlsafe_base64_encode(force_bytes(user.pk))
 
         # Cambia esto por el dominio real de tu frontend
-        FRONTEND_URL = "https://front-talento-h.vercel.app/"
+        FRONTEND_URL = "https://front-talento-h.vercel.app"
 
         reset_link = f"{FRONTEND_URL}/reset-password/{uid}/{token}/"
 
@@ -3210,24 +3211,21 @@ Equipo Talento Hub
 """
 
         # Preparar correo SendGrid
-        email_sendgrid = Mail(
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to_emails=email,
-            subject=asunto,
-            plain_text_content=mensaje
-        )
-
         try:
-            sg = SendGridAPIClient(settings.SENDGRID_API_KEY)
-            response = sg.send(email_sendgrid)
-            print("📧 SendGrid enviado:", response.status_code)
+            send_mail(
+                      subject=asunto,
+                      message=mensaje,
+                      from_email=settings.DEFAULT_FROM_EMAIL,
+                      recipient_list=[email],
+                      fail_silently=False
+                     )
+            print("📧 Correo enviado correctamente por SMTP")
         except Exception as e:
-            print("❌ Error enviando correo con SendGrid:", e)
+            print("❌ Error enviando correo:", e)
             return Response({"error": "Error enviando correo"}, status=500)
 
         return Response({"message": "Si el correo existe, recibirás un enlace para restablecer tu contraseña."},
                      status=status.HTTP_200_OK)
-        
         
 class PasswordResetConfirmView(APIView):
     permission_classes = []
@@ -3530,9 +3528,11 @@ class FavoritosView(APIView):
 # Entrevistas
 # ----------------------------
 import logging
+from sendgrid.helpers.mail import Mail, Attachment
+import base64
 from datetime import datetime, timedelta
 from django.core.mail import EmailMessage
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(_name_)
 
 class EntrevistaView(APIView):
     permission_classes = [IsAuthenticated]
@@ -3545,17 +3545,23 @@ class EntrevistaView(APIView):
         end_dt = datetime.combine(entrevista.fecha, entrevista.hora) + timedelta(hours=1)
         end = end_dt.strftime("%Y%m%dT%H%M%S")
 
+        candidato = entrevista.postulacion.candidato
+        correo_candidato = candidato.email
+
         return f"""BEGIN:VCALENDAR
 VERSION:2.0
-PRODID:-//TalentoHub//ES
 CALSCALE:GREGORIAN
 METHOD:REQUEST
 BEGIN:VEVENT
+UID:{entrevista.id}@talentohub.com
+DTSTAMP:{datetime.now().strftime("%Y%m%dT%H%M%S")}
 DTSTART:{start}
 DTEND:{end}
 SUMMARY:Entrevista – Talento Hub
 DESCRIPTION:{entrevista.descripcion}\\nLink: {entrevista.medio}
 LOCATION:{entrevista.medio}
+ORGANIZER;CN=Talento Hub:mailto:{settings.DEFAULT_FROM_EMAIL}
+ATTENDEE;RSVP=TRUE;CN={candidato.first_name}:mailto:{correo_candidato}
 STATUS:CONFIRMED
 END:VEVENT
 END:VCALENDAR
@@ -3589,24 +3595,20 @@ Equipo Talento Hub
             email = EmailMessage(
                 subject=asunto,
                 body=mensaje,
-                from_email=settings.DEFAULT_FROM_EMAIL,  # SendGrid remitente
+                from_email=settings.DEFAULT_FROM_EMAIL,
                 to=[correo_destino],
-                headers={
-                    "X-TalentoHub-ID": "Entrevista-Programada",
-                    "List-Unsubscribe": "<mailto:noreply@talentohub.com>",
-                }
-            )
+             )
 
-            # Adjuntar ICS
+        # Adjuntar el archivo ICS
             archivo_ics = self.generar_ics(entrevista)
             email.attach("entrevista.ics", archivo_ics, "text/calendar")
 
-            email.send()
-            logger.info(f"Correo enviado a {correo_destino}")
+        # Envío de correo en segundo plano
+            send_async_email(email)
 
         except Exception as e:
-            logger.error(f"Error enviando correo: {e}")
-            print(f"❌ Error enviando correo: {e}")
+            logger.error(f"Error enviando correo async: {e}")
+            print(f"❌ Error enviando correo async: {e}")
 
     # ----------------------------
     # POST → Crear entrevista
@@ -3625,6 +3627,9 @@ Equipo Talento Hub
         return Response(serializer.errors, status=400)
 
 
+    # ----------------------------
+    # GET(por candidato, p)
+    # ----------------------------
     def get(self, request, postulacion_id=None, entrevista_id=None, candidato_id=None):
 
         # Obtener entrevistas por candidato
@@ -3682,4 +3687,13 @@ Equipo Talento Hub
         entrevista.delete()
         return Response(status=204)
 
+def send_async_email(email_message):
+    def send():
+        try:
+            email_message.send()
+            print("📧 Email enviado correctamente (async)")
+        except Exception as e:
+            print(f"❌ Error enviando correo async: {e}")
 
+    thread = threading.Thread(target=send)
+    thread.start()
