@@ -22,7 +22,6 @@ class Migration(migrations.Migration):
             ],
             options={
                 'db_table': 'core_competencia',
-                'managed': False,
             },
         ),
         migrations.CreateModel(
@@ -33,7 +32,6 @@ class Migration(migrations.Migration):
             ],
             options={
                 'db_table': 'core_favoritos',
-                'managed': False,
             },
         ),
         migrations.CreateModel(
@@ -47,7 +45,6 @@ class Migration(migrations.Migration):
             ],
             options={
                 'db_table': 'core_postulaciones',
-                'managed': False,
             },
         ),
         migrations.CreateModel(
@@ -70,7 +67,6 @@ class Migration(migrations.Migration):
             ],
             options={
                 'db_table': 'core_vacantes',
-                'managed': False,
             },
         ),
         migrations.CreateModel(
@@ -81,7 +77,6 @@ class Migration(migrations.Migration):
             ],
             options={
                 'db_table': 'core_vacante_rrhh',
-                'managed': False,
             },
         ),
         migrations.CreateModel(

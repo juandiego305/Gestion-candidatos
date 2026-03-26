@@ -1,7 +1,7 @@
 # core/views.py
-import threading
 from django.http import HttpResponse
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
@@ -9,11 +9,12 @@ from rest_framework.views import APIView
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
 from django.contrib.auth.tokens import default_token_generator
-from django.core.mail import send_mail
 from django.conf import settings
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
+import os
 
-from core.supabase_client import SUPABASE_URL, get_supabase_client
-from core.supabase_client import SUPABASE_SERVICE_KEY
+
 
 from .serializers_user import PerfilSerializer, UserSerializer
 from .models import Empresa, Entrevista, Postulacion, VacanteRRHH
@@ -21,11 +22,12 @@ from .models import Empresa, Entrevista, Postulacion, VacanteRRHH
 from .serializers_user import PerfilSerializer, UserSerializer, PerfilUsuarioSerializer
 from .models import Empresa
 
-from .serializers import EmpresaSerializer, UsuarioSerializer, PostulacionSerializer, EntrevistaSerializer, supabase
+from .serializers import EmpresaSerializer, UsuarioSerializer, PostulacionSerializer, EntrevistaSerializer
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
 from .models import Roles
-from supabase import create_client
+from .email_service import send_plain_email, send_template_email, send_message_async
+
 from rest_framework import generics, permissions
 
 from django.http import JsonResponse
@@ -44,37 +46,73 @@ import logging
 from .models import Favorito
 from .serializers import FavoritoSerializer
 from django.db.models import Count, Max
+from django.db import transaction
+from django.db import connection
 import io
 import csv
+import time
+import os
 from io import BytesIO
+import cloudinary
+import cloudinary.api
+import cloudinary.uploader
 
 logger = logging.getLogger(__name__)
 
+if os.getenv("CLOUDINARY_URL"):
+    cloudinary.config(cloudinary_url=os.getenv("CLOUDINARY_URL"), secure=True)
+
+
+def _upload_to_cloudinary(file_bytes, folder, filename, resource_type="auto"):
+    ts = int(time.time())
+    original = (filename or "file").replace(" ", "_")
+    stem, ext = (original.rsplit(".", 1) + [""])[:2] if "." in original else (original, "")
+
+    # En uploads no-raw, Cloudinary añade formato en URL; evitar .pdf.pdf.
+    if resource_type == "raw" and ext:
+        name = f"{stem}_{ts}.{ext}"
+    else:
+        name = f"{stem}_{ts}"
+
+    public_id = f"{folder}/{name}"
+    result = cloudinary.uploader.upload(
+        io.BytesIO(file_bytes),
+        public_id=public_id,
+        resource_type=resource_type,
+        overwrite=True,
+        invalidate=True,
+    )
+    return result.get("secure_url") or result.get("url")
 
 
 
-supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
+
 
 def get_supabase_role(user):
-    """
-    Obtiene el campo 'role' desde la tabla auth_user de Supabase
-    usando el id del usuario de Django.
-    """
+    """Obtiene el rol del usuario desde la BD (prioriza SQL raw sobre atributo en memoria)"""
+    # Primero intentar leer directamente de la BD para asegurar que esté actualizado
+    from django.db import connection
     try:
-        # Realiza la consulta en la tabla 'auth_user' en Supabase
-        resp = supabase.table("auth_user").select("role").eq("id", user.id).execute()
-        
-        # Verifica si la respuesta contiene datos
-        if resp.data and len(resp.data) > 0:
-            role = resp.data[0].get("role")
-            print("🔥 Rol desde Supabase:", role)  # Esto te ayudará a depurar el valor de 'role'
-            return role
-        else:
-            print(f"⚠️ Usuario no encontrado en Supabase para id: {user.id}")
-            return None
-    except Exception as e:
-        print(f"⚠️ Error obteniendo rol de Supabase: {e}")
-        return None
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT role FROM auth_user WHERE id = %s', [user.id])
+            row = cursor.fetchone()
+            if row and row[0]:
+                return normalize_role(row[0])
+    except Exception:
+        pass
+    
+    # Fallback a atributo en memoria
+    role = getattr(user, "role", None)
+    if role:
+        return normalize_role(role)
+
+    # Fallback a grupos de Django
+    group_names = {g.name.lower() for g in user.groups.all()}
+    if "admin" in group_names:
+        return Roles.ADMIN
+    if "empleado_rrhh" in group_names or "rrhh" in group_names:
+        return Roles.EMPLEADO_RRHH
+    return Roles.CANDIDATO
 
 
 def normalize_role(role):
@@ -96,137 +134,24 @@ def normalize_role(role):
 
 
 def get_supabase_empresa_id(user):
-    """Comprueba en Supabase la empresa asociada al usuario.
+    # 1) Empresa asignada directamente al usuario (RRHH/candidato promovido).
+    assigned_empresa = getattr(user, "id_empresa", None)
+    if assigned_empresa:
+        return assigned_empresa
 
-    Devuelve un int o None.
-    """
+    # 2) Fallback a columna real en auth_user cuando el modelo no expone el campo.
     try:
-        # Priorizar la tabla 'auth_user' (puede contener id_empresa)
-        def _parse_value(val):
-            if val is None:
-                return None
-            # Si ya es int
-            if isinstance(val, int):
-                return val
-            # Si es string que contiene dígitos
-            if isinstance(val, str):
-                s = val.strip()
-                if s.isdigit():
-                    return int(s)
-                # A veces viene como JSON-string o como '{"id": 3}'
-                try:
-                    import json
-                    parsed = json.loads(s)
-                    if isinstance(parsed, dict):
-                        for k in ("id", "empresa_id", "id_empresa", "company_id", "empresa"):
-                            if k in parsed and parsed[k] is not None:
-                                try:
-                                    return int(parsed[k])
-                                except Exception:
-                                    pass
-                except Exception:
-                    pass
-                return None
-            # Si es dict
-            if isinstance(val, dict):
-                for k in ("id", "empresa_id", "id_empresa", "company_id", "empresa"):
-                    if k in val and val[k] is not None:
-                        try:
-                            return int(val[k])
-                        except Exception:
-                            try:
-                                return int(str(val[k]))
-                            except Exception:
-                                return None
-            # Otros tipos: intentar convertir a int
-            try:
-                return int(val)
-            except Exception:
-                return None
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT id_empresa FROM auth_user WHERE id = %s", [user.id])
+            row = cursor.fetchone()
+            if row and row[0]:
+                return row[0]
+    except Exception:
+        pass
 
-        # 1) Revisar auth_user por id
-        try:
-            res = supabase.table("auth_user").select("*").eq("id", user.id).execute()
-            if res.data:
-                row = res.data[0]
-                # buscar claves relevantes
-                for key in ("id_empresa", "empresa_id", "company_id", "empresa"):
-                    if key in row and row.get(key) is not None:
-                        parsed = _parse_value(row.get(key))
-                        if parsed is not None:
-                            logger.debug("Found empresa in auth_user by id: %s -> %s", key, parsed)
-                            return parsed
-                # si no tiene claves, intentar revisar cualquier campo por si viene embebido
-                for k, v in row.items():
-                    parsed = _parse_value(v)
-                    if parsed is not None:
-                        logger.debug("Parsed empresa from auth_user.%s -> %s", k, parsed)
-                        return parsed
-        except Exception:
-            pass
-
-        # 2) Revisar auth_user por email
-        try:
-            res2 = supabase.table("auth_user").select("*").eq("email", user.email).execute()
-            if res2.data:
-                row = res2.data[0]
-                for key in ("id_empresa", "empresa_id", "company_id", "empresa"):
-                    if key in row and row.get(key) is not None:
-                        parsed = _parse_value(row.get(key))
-                        if parsed is not None:
-                            logger.debug("Found empresa in auth_user by email: %s -> %s", key, parsed)
-                            return parsed
-                for k, v in row.items():
-                    parsed = _parse_value(v)
-                    if parsed is not None:
-                        logger.debug("Parsed empresa from auth_user.%s -> %s", k, parsed)
-                        return parsed
-        except Exception:
-            pass
-
-        # 3) Buscar en 'usuarios' por id
-        try:
-            res3 = supabase.table("usuarios").select("*").eq("id", user.id).execute()
-            if res3.data:
-                row = res3.data[0]
-                for key in ("empresa_id", "id_empresa", "company_id", "empresa"):
-                    if key in row and row.get(key) is not None:
-                        parsed = _parse_value(row.get(key))
-                        if parsed is not None:
-                            logger.debug("Found empresa in usuarios by id: %s -> %s", key, parsed)
-                            return parsed
-                for k, v in row.items():
-                    parsed = _parse_value(v)
-                    if parsed is not None:
-                        logger.debug("Parsed empresa from usuarios.%s -> %s", k, parsed)
-                        return parsed
-        except Exception:
-            pass
-
-        # 4) Buscar en 'usuarios' por email
-        try:
-            res4 = supabase.table("usuarios").select("*").eq("email", user.email).execute()
-            if res4.data:
-                row = res4.data[0]
-                for key in ("empresa_id", "id_empresa", "company_id", "empresa"):
-                    if key in row and row.get(key) is not None:
-                        parsed = _parse_value(row.get(key))
-                        if parsed is not None:
-                            logger.debug("Found empresa in usuarios by email: %s -> %s", key, parsed)
-                            return parsed
-                for k, v in row.items():
-                    parsed = _parse_value(v)
-                    if parsed is not None:
-                        logger.debug("Parsed empresa from usuarios.%s -> %s", k, parsed)
-                        return parsed
-        except Exception:
-            pass
-
-    except Exception as e:
-        logger.exception("Error leyendo empresa de Supabase para user id=%s: %s", getattr(user, 'id', None), e)
-        return None
-
-    return None
+    # 3) Si es owner de empresa (admin dueño), usar esa empresa.
+    owned_empresa = Empresa.objects.filter(owner=user).values_list("id", flat=True).first()
+    return owned_empresa
 
 from .models import PerfilUsuario, validate_hoja_vida
 from rest_framework import status, permissions, parsers 
@@ -291,21 +216,32 @@ def crear_vacante(request):
         return JsonResponse({'error': 'La empresa especificada no existe.'}, status=400)
 
     # 4. Crear vacante
-    vacante = Vacante.objects.create(
-        titulo=titulo,
-        descripcion=descripcion,
-        requisitos=requisitos,
-        fecha_expiracion=fecha_expiracion,
-        id_empresa=empresa,
-        creado_por=request.user,
-        ubicacion=ubicacion,
-        salario=salario or None,
-        experiencia=experiencia,
-        beneficios=beneficios,
-        tipo_jornada=tipo_jornada,
-        modalidad_trabajo=modalidad_trabajo,
-        
-    )
+    try:
+        vacante = Vacante.objects.create(
+            titulo=titulo,
+            descripcion=descripcion,
+            requisitos=requisitos,
+            fecha_expiracion=fecha_expiracion,
+            id_empresa=empresa,
+            creado_por=request.user,
+            ubicacion=ubicacion,
+            salario=salario or None,
+            experiencia=experiencia,
+            beneficios=beneficios,
+            tipo_jornada=tipo_jornada,
+            modalidad_trabajo=modalidad_trabajo,
+        )
+    except Exception as e:
+        logger.exception("Error creando vacante")
+        detail = str(e) if settings.DEBUG else "Error interno al crear vacante"
+        return JsonResponse(
+            {
+                "error": "No se pudo crear la vacante.",
+                "detail": detail,
+                "hint": "Verifica migraciones pendientes con 'python manage.py migrate'.",
+            },
+            status=500,
+        )
 
     return JsonResponse(
         {'message': 'Vacante creada exitosamente', 'vacante_id': vacante.id},
@@ -343,27 +279,32 @@ class AsignarEmpleadoView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # --- 3. Buscar usuario por email en Supabase ---
+        # --- 3. Buscar usuario por email en Django ---
         try:
-            resp = supabase.table("auth_user").select("*").eq("email", email).execute()
-
-            if not resp.data:
+            empleado = User.objects.filter(email=email).first()
+            if not empleado:
                 return Response(
                     {"error": "No existe un usuario con ese correo."},
                     status=status.HTTP_404_NOT_FOUND
                 )
 
-            usuario_supabase = resp.data[0]
-
         except Exception as e:
             return Response(
-                {"error": f"Error consultando Supabase: {str(e)}"},
+                {"error": f"Error consultando usuario: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-        empleado_id = usuario_supabase["id"]
-        role = usuario_supabase.get("role")
-        id_empresa_actual = usuario_supabase.get("id_empresa")
+        role = normalize_role(getattr(empleado, "role", None) or get_supabase_role(empleado))
+        id_empresa_actual = getattr(empleado, "id_empresa", None)
+        if id_empresa_actual is None:
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT id_empresa FROM auth_user WHERE id = %s", [empleado.id])
+                    row = cursor.fetchone()
+                    if row:
+                        id_empresa_actual = row[0]
+            except Exception:
+                id_empresa_actual = None
 
         # --- 4. Validar rol candidato ---
         if role != "candidato":
@@ -381,15 +322,37 @@ class AsignarEmpleadoView(APIView):
 
         # --- 6. Asignar empresa al usuario ---
         try:
-            supabase.table("auth_user").update({
-                "id_empresa": empresa.id,
-                "role": "rrhh"  # convertirlo automáticamente
-            }).eq("id", empleado_id).execute()
+            with transaction.atomic():
+                # Camino principal: escribir directo en auth_user (fuente real de verdad en este proyecto).
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE auth_user SET role = %s, id_empresa = %s WHERE id = %s",
+                        [Roles.EMPLEADO_RRHH, empresa.id, empleado.id],
+                    )
+
+                # Respaldo ORM por compatibilidad si el modelo expone esos campos.
+                update_fields = []
+                if hasattr(empleado, "id_empresa"):
+                    empleado.id_empresa = empresa.id
+                    update_fields.append("id_empresa")
+                if hasattr(empleado, "role"):
+                    empleado.role = Roles.EMPLEADO_RRHH
+                    update_fields.append("role")
+                if update_fields:
+                    empleado.save(update_fields=update_fields)
+
+                rrhh_group, _ = Group.objects.get_or_create(name=Roles.EMPLEADO_RRHH)
+                empleado.groups.add(rrhh_group)
 
         except Exception as e:
+            logger.exception("Error actualizando empleado durante asignacion")
+            detail = str(e) if settings.DEBUG else "Error interno"
             return Response(
-                {"error": f"Error actualizando Supabase: {str(e)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {
+                    "error": "Error actualizando usuario durante la asignacion.",
+                    "detail": detail,
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
         return Response(
@@ -416,13 +379,19 @@ def listar_trabajadores(request, empresa_id):
     except Empresa.DoesNotExist:
         return Response({"error": "No tiene permisos sobre esta empresa."}, status=403)
 
-    # 3) Consultar en Supabase los RRHH de esa empresa
-    resp = supabase.table("auth_user").select("id, email, role, id_empresa") \
-            .eq("id_empresa", empresa_id) \
-            .eq("role", "rrhh") \
-            .execute()
-
-    trabajadores = resp.data if resp.data else []
+    # 3) Obtener RRHH desde Django
+    rrhh_users = User.objects.filter(groups__name__in=["rrhh", Roles.EMPLEADO_RRHH]).distinct()
+    trabajadores = []
+    for u in rrhh_users:
+        user_empresa_id = getattr(u, "id_empresa", None)
+        if user_empresa_id and int(user_empresa_id) != int(empresa_id):
+            continue
+        trabajadores.append({
+            "id": u.id,
+            "email": u.email,
+            "role": normalize_role(getattr(u, "role", None)) or Roles.EMPLEADO_RRHH,
+            "id_empresa": user_empresa_id,
+        })
 
     return Response({
         "empresa": empresa.nombre,
@@ -630,10 +599,8 @@ def listar_vacantes(request):
     - Admin:
         - Si envía ?empresa_id=X → solo esa empresa.
         - Si no envía → todas las vacantes.
-    - Empleado RRHH:
-        - Siempre solo las vacantes de SU empresa (ignora empresa_id del query).
-    - Candidato:
-        - Solo vacantes en estado "Publicado".
+    - Empleado RRHH y Candidato:
+        - Siempre ven vacantes en estado "Publicado" (de cualquier empresa).
         - Si envía ?empresa_id=X → solo publicadas de esa empresa.
     """
     role = get_supabase_role(request.user)
@@ -646,18 +613,7 @@ def listar_vacantes(request):
         else:
             vacantes = Vacante.objects.all()
 
-    # --- EMPLEADO_RRHH: ve solo las de su empresa (ignora empresa_param) ---
-    elif role == "empleado_rrhh":
-        try:
-            empresa_id = Empresa.objects.get(owner=request.user).id
-        except Empresa.DoesNotExist:
-            return JsonResponse(
-                {"error": "No tienes una empresa asociada."},
-                status=400
-            )
-        vacantes = Vacante.objects.filter(id_empresa_id=empresa_id)
-
-    # --- CANDIDATO: solo vacantes publicadas, con filtro opcional por empresa ---
+    # --- EMPLEADO_RRHH y CANDIDATO: vacantes publicadas globales ---
     else:
         vacantes = Vacante.objects.filter(estado="Publicado")
         if empresa_param:
@@ -728,8 +684,6 @@ def mis_vacantes_asignadas(request):
 
     return JsonResponse(out, safe=False, status=200)
 
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
 # ----------------------------
 # Postulacion
 # ----------------------------
@@ -777,37 +731,41 @@ def postular_vacante(request, vacante_id):
     # Leer bytes del archivo
     contenido = archivo_cv.read()
 
-    # 6) Construir ruta única en Supabase Storage con timestamp para evitar cache issues
-    import time
-    timestamp = int(time.time())
-    ruta_supabase = f"vacantes/{vacante_id}/cv_{request.user.id}_{timestamp}.pdf"
-
-    # 7) Subir archivo a Supabase con timeout reducido y upsert
+    # 6) Subir archivo a Cloudinary
     try:
-        logger.info(f"Iniciando subida de CV a Supabase: {ruta_supabase} ({archivo_cv.size} bytes)")
-        
-        res = supabase.storage.from_("perfiles").upload(
-            ruta_supabase,
-            contenido,
-            file_options={
-                "content-type": archivo_cv.content_type,
-                "upsert": "true"  # Sobrescribir si ya existe
-            }
+        logger.info(f"Iniciando subida de CV a Cloudinary: vacante={vacante_id} bytes={archivo_cv.size}")
+        url_final = _upload_to_cloudinary(
+            file_bytes=contenido,
+            folder=f"postulaciones/vacantes/{vacante_id}",
+            filename=f"cv_{request.user.id}_{archivo_cv.name}",
+            resource_type="auto",
         )
-
-        # Validar error del upload
-        if res is None or getattr(res, "error", None):
-            logger.error(f"Error subiendo CV a Supabase: {getattr(res, 'error', None)}")
-            return JsonResponse({"error": "Error subiendo archivo a Supabase"}, status=500)
-        
-        logger.info(f"CV subido exitosamente: {ruta_supabase}")
+        logger.info("CV subido exitosamente a Cloudinary")
             
     except Exception as e:
-        logger.error(f"Excepción subiendo CV a Supabase: {str(e)}")
+        logger.error(f"Excepción subiendo CV a Cloudinary: {str(e)}")
         return JsonResponse({"error": f"Error subiendo archivo: {str(e)}"}, status=500)
 
-    # 8) Obtener URL pública
-    url_final = supabase.storage.from_("perfiles").get_public_url(ruta_supabase)
+    cv_preview_url = None
+    if str(archivo_cv.name).lower().endswith(".pdf"):
+        try:
+            upload_marker = "/upload/"
+            suffix = url_final.split(upload_marker, 1)[1]
+            parts = suffix.split("/")
+            if parts and parts[0].startswith("v") and parts[0][1:].isdigit():
+                parts = parts[1:]
+            public_with_ext = "/".join(parts)
+            public_id = public_with_ext.rsplit(".", 1)[0] if "." in public_with_ext else public_with_ext
+            cv_preview_url, _ = cloudinary.utils.cloudinary_url(
+                public_id,
+                resource_type="image",
+                type="upload",
+                secure=True,
+                format="jpg",
+                page=1,
+            )
+        except Exception:
+            cv_preview_url = None
 
     # 9) Crear postulación
     postulacion = Postulacion.objects.create(
@@ -819,7 +777,7 @@ def postular_vacante(request, vacante_id):
         fecha_postulacion=timezone.now()
     )
 
-    # 10) Enviar correo usando SendGrid
+    # 10) Enviar correo de confirmacion
     try:
         candidato = postulacion.candidato
         empresa = postulacion.empresa
@@ -865,38 +823,31 @@ Sistema de Gestión de Candidatos | TalentoHub
 Correo generado el {timezone.now().strftime('%d/%m/%Y a las %H:%M')}
 """
 
-        # Construir email
-        email = Mail(
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to_emails=candidato.email,
+        sent = send_plain_email(
             subject=asunto,
-            plain_text_content=mensaje
+            message=mensaje,
+            recipient_list=[candidato.email],
+            fail_silently=True,
         )
 
-        # Cliente SendGrid
-        sg = SendGridAPIClient(settings.SENDGRID_API_KEY)
-        response = sg.send(email)
-
-        print(f"📧 SendGrid Response: {response.status_code}")
-
-        if 200 <= response.status_code < 300:
+        if sent:
             logger.info(f"✅ Correo enviado exitosamente a {candidato.email}")
-
             comentario = f"\n[{timezone.now().isoformat()}] Correo de confirmación enviado a {candidato.email}"
             postulacion.comentarios = (postulacion.comentarios or "") + comentario
             postulacion.save(update_fields=["comentarios"])
         else:
-            logger.warning(f"⚠️ SendGrid retornó código inesperado: {response.status_code}")
+            logger.warning(f"⚠️ No se pudo enviar correo de confirmación a {candidato.email}")
 
     except Exception as e:
-        logger.error(f"❌ Error enviando correo con SendGrid: {e}")
+        logger.error(f"❌ Error enviando correo de confirmación: {e}")
 
     return Response(
     {
         "message": "Postulación realizada con éxito.",
         "cv_url": url_final,
+        "cv_preview_url": cv_preview_url,
         "estado": "Postulado",
-        "sendgrid": "Correo enviado" if 'response' in locals() and 200 <= response.status_code < 300 else "Falla en envío de correo"
+        "email": "Correo enviado" if 'sent' in locals() and sent else "Falla en envío de correo"
     },
     status=201
 )
@@ -908,19 +859,24 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 @permission_classes([IsAuthenticated])
 def listar_postulaciones_por_vacante(request, id_vacante):
 
-    # 🔥 Obtener rol e id_empresa directamente desde Supabase
-    role = get_supabase_role(request.user)
+    # Obtener rol e id_empresa normalizados para soportar variantes (rrhh/empleado_rrhh).
+    role = normalize_role(getattr(request.user, "role", None) or get_supabase_role(request.user))
     id_empresa_usuario = get_supabase_empresa_id(request.user)
+    try:
+        id_empresa_usuario = int(id_empresa_usuario) if id_empresa_usuario is not None else None
+    except Exception:
+        id_empresa_usuario = None
 
     print("🔥 Rol del usuario:", role)
     print("🏭 Empresa del usuario:", id_empresa_usuario)
 
     vacante = get_object_or_404(Vacante, id=id_vacante)
+    vacante_empresa_id = getattr(vacante, "id_empresa_id", None)
 
-    if role not in ["rrhh", "admin"]:
+    if role not in [Roles.EMPLEADO_RRHH, Roles.ADMIN]:
         return Response({"detail": "No autorizado"}, status=403)
 
-    if role == "rrhh" and id_empresa_usuario != vacante.id_empresa_id:
+    if role == Roles.EMPLEADO_RRHH and id_empresa_usuario != vacante_empresa_id:
         return Response({"detail": "No pertenece a tu empresa"}, status=403)
 
     postulaciones = Postulacion.objects.filter(vacante_id=id_vacante)
@@ -1951,22 +1907,14 @@ Correo generado automáticamente el {timezone.now().strftime('%d/%m/%Y a las %H:
             template = templates.get(nuevo_estado)
             
             if template:
-               from sendgrid import SendGridAPIClient
-               from sendgrid.helpers.mail import Mail
-
-               email = Mail(
-                   from_email=settings.DEFAULT_FROM_EMAIL,
-                   to_emails=candidato.email,
-                   subject=template["asunto"],
-                   plain_text_content=template["mensaje"]
-)
-
-               try:
-                   sg = SendGridAPIClient(settings.SENDGRID_API_KEY)
-                   response = sg.send(email)
-                   logger.info(f"📧 SendGrid enviado: {response.status_code}")
-               except Exception as e:
-                   logger.error(f"❌ Error enviando correo SendGrid: {e}")
+                send_plain_email(
+                    subject=template["asunto"],
+                    message=template["mensaje"],
+                    recipient_list=[candidato.email],
+                    fail_silently=True,
+                    async_send=True,
+                )
+                logger.info(f"📧 Correo de estado en cola para {candidato.email}")
                     
         except Exception as e:
             print(f"❌ Error enviando correo de estado '{nuevo_estado}': {e}")
@@ -2074,42 +2022,17 @@ class IsOwner(permissions.BasePermission):
         return owner == request.user
 
 
-# Inicializar cliente Supabase con timeout extendido (60s)
-import httpx
-_timeout = httpx.Timeout(60.0, connect=60.0, read=60.0, write=60.0)
-_http_client = httpx.Client(timeout=_timeout, verify=True)
-
-supabase = create_client(
-    settings.SUPABASE_URL,
-    settings.SUPABASE_SERVICE_KEY,
-)
-
 def upload_to_supabase_with_retry(bucket_path, file_bytes, file_name, content_type,
                                   max_retries=3, initial_backoff=1.0):
-    """Suba archivos a Supabase con reintentos exponenciales. Recibe bytes directamente."""
-    backoff = initial_backoff
-    last_exc = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            logger.info(f"Intento {attempt}/{max_retries} de subir {file_name} a {bucket_path}")
-            res = supabase.storage.from_(bucket_path).upload(
-                file_name,
-                file_bytes,
-                file_options={"content-type": content_type, "upsert": "true"}
-            )
-            if res is None or getattr(res, "error", None):
-                raise Exception(f"Error en upload: {getattr(res, 'error', 'respuesta vacía')}")
-            logger.info(f"Upload exitoso en intento {attempt}")
-            return res
-        except Exception as e:
-            last_exc = e
-            if attempt < max_retries:
-                logger.warning(f"Fallo en intento {attempt}: {e}. Reintentando en {backoff}s...")
-                time.sleep(backoff)
-                backoff *= 2
-            else:
-                logger.error(f"Fallo definitivo después de {max_retries} intentos: {e}")
-    raise last_exc
+    """Compatibilidad: conserva nombre, pero sube archivo a Cloudinary."""
+    _ = (max_retries, initial_backoff)
+    url = _upload_to_cloudinary(
+        file_bytes=file_bytes,
+        folder=bucket_path,
+        filename=file_name,
+        resource_type="raw" if "pdf" in (content_type or "").lower() else "auto",
+    )
+    return {"url": url}
 
 class IsAdmin(permissions.BasePermission):
     """Solo administradores pueden gestionar usuarios"""
@@ -2156,14 +2079,14 @@ class TestSupabaseView(APIView):
 
     def get(self, request):
         try:
-            response = supabase.table("usuarios").select("id, email").limit(1).execute()
+            response = cloudinary.api.ping()
             return Response({
-                "message": "Conexión a Supabase exitosa",
-                "data": response.data
+                "message": "Conexión a Cloudinary exitosa",
+                "data": response
             })
         except Exception as e:
             return Response({
-                "message": "Error al conectar a Supabase",
+                "message": "Error al conectar a Cloudinary",
                 "error": str(e)
             }, status=500)
 
@@ -2186,58 +2109,8 @@ class RegisterView(APIView):
 
 
 # ----------------------------
-# Login con JWT
+# Login con JWT (ver CustomTokenObtainPairSerializer más abajo)
 # ----------------------------
-from .serializers import supabase
-
-class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
-    def validate(self, attrs):
-        # 1. Autenticar en Django
-        data = super().validate(attrs)
-
-        # 2. Obtener el usuario
-        user = self.user
-
-        # 3. Verificar en Supabase si el usuario existe
-        try:
-            supabase_response = supabase.table("auth_user").select("id, email, role").eq("email", user.email).execute()
-
-            if supabase_response.data:
-                user_data = supabase_response.data[0]
-                data["user"] = {
-                    "id": user.id,
-                    "email": user.email,
-                    "role": user_data.get("role", "candidato"),  # Rol desde Supabase
-                    "username": user.username
-                }
-            else:
-                # Si no existe en Supabase, asignar rol 'candidato' por defecto
-                data["user"] = {
-                    "id": user.id,
-                    "email": user.email,
-                    "role": "candidato",
-                    "username": user.username
-                }
-
-        except Exception as e:
-            print(f"⚠️ Error consultando Supabase: {e}")
-            # Si falla la consulta, devolver datos básicos
-            data["user"] = {
-                "id": user.id,
-                "email": user.email,
-                "username": user.username,
-                "role": "candidato"
-            }
-
-        return data
-
-
-class CustomTokenObtainPairView(TokenObtainPairView):
-    serializer_class = CustomTokenObtainPairSerializer
-
-
-# ----------------------------
-# Asignar RRHH a vacante (Admin only)
 # ----------------------------
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -2404,7 +2277,7 @@ def actualizar_hoja_vida(request):
     Body esperado (form-data):
     - hoja_de_vida: archivo PDF
 
-    Sube a Supabase Storage y actualiza la URL en el campo hoja_de_vida del perfil.
+    Sube a Cloudinary y actualiza la URL en el campo hoja_de_vida del perfil.
     """
     user = request.user
     perfil, _ = PerfilUsuario.objects.get_or_create(user=user)
@@ -2420,20 +2293,15 @@ def actualizar_hoja_vida(request):
     except Exception as e:
         return Response({'error': str(e)}, status=400)
 
-    # Subir a Supabase Storage
+    # Subir a Cloudinary
     try:
-        ruta_supabase = f"perfiles/hoja_vida_{user.id}.pdf"
         contenido = archivo_cv.read()
-
-        upload_to_supabase_with_retry(
-            bucket_path="perfiles",
+        url_final = _upload_to_cloudinary(
             file_bytes=contenido,
-            file_name=ruta_supabase,
-            content_type=archivo_cv.content_type
+            folder=f"perfiles/{user.id}/hoja_vida",
+            filename=archivo_cv.name,
+            resource_type="raw",
         )
-
-        # Obtener URL pública
-        url_final = supabase.storage.from_("perfiles").get_public_url(ruta_supabase)
 
         # Actualizar perfil
         perfil.hoja_de_vida = url_final
@@ -2579,41 +2447,17 @@ class IsOwner(permissions.BasePermission):
         owner = getattr(obj, "owner", None) or getattr(obj, "user", None)
         return bool(owner and owner == request.user)
 
-# Inicializar cliente Supabase con timeout extendido (60s)
-import httpx
-_timeout = httpx.Timeout(60.0, connect=60.0, read=60.0, write=60.0)
-_http_client = httpx.Client(timeout=_timeout, verify=True)
-
-supabase = create_client(
-    settings.SUPABASE_URL,
-    settings.SUPABASE_SERVICE_KEY,
-)
-
 def upload_to_supabase_with_retry(bucket_path, file_bytes, file_name, content_type,
                                   max_retries=3, initial_backoff=1.0):
-    """Sube archivos a Supabase con reintentos exponenciales. Recibe bytes directamente."""
-    import time as _time
-    last_exc = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            print(f"📤 Intento {attempt}/{max_retries}: subiendo {file_name} ({len(file_bytes)} bytes) a {bucket_path}")
-            resp = supabase.storage.from_("perfiles").upload(
-                bucket_path,
-                file_bytes,
-                {"content-type": content_type}
-            )
-            print(f"✅ Archivo subido exitosamente: {bucket_path}")
-            return resp
-        except Exception as e:
-            last_exc = e
-            print(f"⚠️ Error en intento {attempt}: {type(e).__name__}: {e}")
-            if attempt == max_retries:
-                print(f"❌ Superados {max_retries} intentos para {file_name}")
-                raise
-            backoff = initial_backoff * (2 ** (attempt - 1))
-            print(f"⏳ Esperando {backoff}s antes del siguiente intento...")
-            _time.sleep(backoff)
-    raise last_exc
+    """Compatibilidad: conserva nombre, pero sube archivo a Cloudinary."""
+    _ = (max_retries, initial_backoff)
+    url = _upload_to_cloudinary(
+        file_bytes=file_bytes,
+        folder=bucket_path,
+        filename=file_name,
+        resource_type="raw" if "pdf" in (content_type or "").lower() else "auto",
+    )
+    return {"url": url}
 
 
 # ----------------------------
@@ -2705,41 +2549,17 @@ class IsOwner(permissions.BasePermission):
         owner = getattr(obj, "owner", None) or getattr(obj, "user", None)
         return bool(owner and owner == request.user)
 
-# Inicializar cliente Supabase con timeout extendido (60s)
-import httpx
-_timeout = httpx.Timeout(60.0, connect=60.0, read=60.0, write=60.0)
-_http_client = httpx.Client(timeout=_timeout, verify=True)
-
-supabase = create_client(
-    settings.SUPABASE_URL,
-    settings.SUPABASE_SERVICE_KEY,
-)
-
 def upload_to_supabase_with_retry(bucket_path, file_bytes, file_name, content_type,
                                   max_retries=3, initial_backoff=1.0):
-    """Sube archivos a Supabase con reintentos exponenciales. Recibe bytes directamente."""
-    import time as _time
-    last_exc = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            print(f"📤 Intento {attempt}/{max_retries}: subiendo {file_name} ({len(file_bytes)} bytes) a {bucket_path}")
-            resp = supabase.storage.from_("perfiles").upload(
-                bucket_path,
-                file_bytes,
-                {"content-type": content_type}
-            )
-            print(f"✅ Archivo subido exitosamente: {bucket_path}")
-            return resp
-        except Exception as e:
-            last_exc = e
-            print(f"⚠️ Error en intento {attempt}: {type(e).__name__}: {e}")
-            if attempt == max_retries:
-                print(f"❌ Superados {max_retries} intentos para {file_name}")
-                raise
-            backoff = initial_backoff * (2 ** (attempt - 1))
-            print(f"⏳ Esperando {backoff}s antes del siguiente intento...")
-            _time.sleep(backoff)
-    raise last_exc
+    """Compatibilidad: conserva nombre, pero sube archivo a Cloudinary."""
+    _ = (max_retries, initial_backoff)
+    url = _upload_to_cloudinary(
+        file_bytes=file_bytes,
+        folder=bucket_path,
+        filename=file_name,
+        resource_type="raw" if "pdf" in (content_type or "").lower() else "auto",
+    )
+    return {"url": url}
 
 class IsAdmin(permissions.BasePermission):
     """Solo administradores pueden gestionar usuarios"""
@@ -2768,23 +2588,10 @@ from rest_framework.permissions import BasePermission
 class IsAdminOrRRHH(BasePermission):
       def has_permission(self, request, view):
         user = request.user
-
-        # Si no está autenticado, no pasa
         if not user or not user.is_authenticated:
             return False
-
-        # Obtener el rol desde Supabase
-        data = supabase.table("auth_user") \
-                       .select("role") \
-                       .eq("id", user.id) \
-                       .execute()
-
-        if not data.data:
-            return False
-
-        role = data.data[0]["role"]
-
-        return role in ["admin", "rrhh"]
+        role = normalize_role(getattr(user, "role", None) or get_supabase_role(user))
+        return role in [Roles.ADMIN, Roles.EMPLEADO_RRHH]
 
 # ----------------------------
 # Home
@@ -2793,26 +2600,49 @@ def home(request):
     return HttpResponse("¡Hola, Django está funcionando correctamente!")
 
 
-# Test endpoint para verificar conexión a Supabase
+# Test endpoint para verificar conexión a Cloudinary
 class TestSupabaseView(APIView):
     permission_classes = [permissions.AllowAny]
     
     def get(self, request):
         try:
-            # Intentar listar buckets
-            buckets = supabase.storage.list_buckets()
-            bucket_names = [b.name for b in buckets]
+            ping = cloudinary.api.ping()
             
             return Response({
-                "status": "✅ Conectado a Supabase",
-                "buckets": bucket_names,
-                "perfiles_bucket_exists": "perfiles" in bucket_names
+                "status": "✅ Conectado a Cloudinary",
+                "cloud_name": os.getenv("CLOUDINARY_CLOUD_NAME"),
+                "ping": ping,
             })
         except Exception as e:
             return Response({
-                "status": "❌ Error conectando a Supabase",
+                "status": "❌ Error conectando a Cloudinary",
                 "error": str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ----------------------------
+# Función auxiliar para enviar email de bienvenida
+# ----------------------------
+def send_welcome_email(user_email, user_name):
+    """Envia un email de bienvenida usando el backend configurado"""
+    try:
+        send_template_email(
+            template_key="welcome",
+            recipient_list=[user_email],
+            context={
+                "user_name": user_name,
+                "login_url": "http://localhost:3000/login",
+            },
+            fail_silently=True,
+            async_send=True,
+        )
+        print(f'✅ Email de bienvenida en cola para {user_email}')
+        return True
+    except Exception as e:
+        print(f'❌ Error enviando email a {user_email}: {str(e)}')
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 # ----------------------------
@@ -2831,7 +2661,11 @@ class RegisterView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            user = serializer.create(serializer.validated_data)
+            user = serializer.create(serializer.validated_data)  # Aquí se guarda el role correctamente
+            
+            # Enviar email de bienvenida en background (no bloqueante)
+            send_welcome_email(user.email, user.username)
+            
         except Exception as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -2842,7 +2676,6 @@ class RegisterView(APIView):
 # ----------------------------
 # Login con JWT
 # ----------------------------
-from .serializers import supabase
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     """Login con username o email + devolver info de usuario y grupos"""
@@ -2863,16 +2696,17 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         data = super().validate(attrs)
         self.user = user
 
-        # Buscar el rol en Supabase por email
+        # Obtener role directamente de la BD (el campo existe en auth_user pero no en el modelo Django)
+        from django.db import connection
+        role = Roles.CANDIDATO
         try:
-            sup_user = supabase.table("auth_user").select("role").eq("id", user.id).execute()
-            if sup_user.data:
-                role = sup_user.data[0].get("role", "candidato")
-            else:
-                     role = "candidato"
-        except Exception as e:
-            print(f"⚠️ Error obteniendo rol de Supabase: {e}")
-            role = "candidato"
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT role FROM auth_user WHERE id = %s', [user.id])
+                row = cursor.fetchone()
+                if row and row[0]:
+                    role = normalize_role(row[0]) or Roles.CANDIDATO
+        except Exception:
+            pass
 
         # Obtener grupos (si los usas)
         groups = [g.name for g in user.groups.all()] if hasattr(user, "groups") else []
@@ -2896,7 +2730,7 @@ class CustomTokenObtainPairView(TokenObtainPairView):
 # ----------------------------
 class EmpresaViewSet(viewsets.ModelViewSet):
     serializer_class = EmpresaSerializer
-    permission_classes = [permissions.IsAuthenticated, IsOwner]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         # Solo muestra las empresas del usuario autenticado
@@ -2906,11 +2740,42 @@ class EmpresaViewSet(viewsets.ModelViewSet):
         context = super().get_serializer_context()
         context["request"] = self.request
         return context
-def perform_create(self, serializer):
+
+    def create(self, request, *args, **kwargs):
+        # Solo usuarios admin pueden crear empresas
+        role = normalize_role(getattr(request.user, "role", None) or get_supabase_role(request.user))
+        if role != Roles.ADMIN:
+            return Response(
+                {"detail": "Solo los usuarios con rol admin pueden crear empresas."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().create(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        # Validar que sea propietario de la empresa
+        empresa = self.get_object()
+        if empresa.owner != request.user:
+            return Response(
+                {"detail": "No tienes permiso para modificar esta empresa."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        # Validar que sea propietario de la empresa
+        empresa = self.get_object()
+        if empresa.owner != request.user:
+            return Response(
+                {"detail": "No tienes permiso para eliminar esta empresa."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().destroy(request, *args, **kwargs)
+
+    def perform_create(self, serializer):
         """
         Cuando un usuario crea una empresa:
         1️⃣ Se guarda la empresa con su usuario como owner (lo hace el serializer).
-        2️⃣ Se actualiza su rol en Django.
+        2️⃣ Se actualiza su rol en Django usando SQL raw.
         3️⃣ Se sincroniza el rol y grupo 'admin' en Supabase.
         """
         user = self.request.user
@@ -2918,49 +2783,24 @@ def perform_create(self, serializer):
         # 🔹 IMPORTANTE: ya NO pasamos owner=user aquí
         empresa = serializer.save()
 
-        # --- 1️⃣ Actualizar rol en Django ---
-        if hasattr(user, "role"):
-            user.role = "admin"
-            user.save(update_fields=["role"])
-            print(f"✅ Rol del usuario '{user.username}' actualizado a ADMIN en Django")
-
-        # --- 2️⃣ Sincronizar con Supabase ---
+        # --- 1️⃣ Actualizar rol en la BD (usando SQL raw porque Django no reconoce el campo role) ---
+        from django.db import connection
         try:
-            # Buscar el usuario en Supabase por email
-            sup_user = supabase.table("auth_user").select("id").eq("email", user.email).execute()
-
-            if not sup_user.data:
-                print(f"⚠️ Usuario {user.email} no encontrado en Supabase.")
-                return
-
-            user_id = sup_user.data[0]["id"]
-
-            # 🔹 Actualizar rol en la tabla usuarios
-            supabase.table("auth_user").update({"role": "admin"}).eq("id", user_id).execute()
-            print(f"✅ Rol de {user.email} actualizado a 'admin' en Supabase.")
-
-            # 🔹 Obtener ID del grupo 'admin'
-            group_res = supabase.table("auth_group").select("id").eq("name", "admin").execute()
-            if not group_res.data:
-                print("⚠️ El grupo 'admin' no existe en Supabase.")
-                return
-
-            group_id = group_res.data[0]["id"]
-
-            # 🔹 Eliminar grupos anteriores del usuario
-            supabase.table("auth_user_groups").delete().eq("user_id", user_id).execute()
-
-            # 🔹 Asignar grupo admin
-            supabase.table("auth_user_groups").insert({
-                "user_id": user_id,
-                "group_id": group_id
-            }).execute()
-
-            print(f"✅ Usuario {user.email} asignado correctamente al grupo 'admin' en Supabase.")
-
+            with connection.cursor() as cursor:
+                cursor.execute('UPDATE auth_user SET role = %s WHERE id = %s', [Roles.ADMIN, user.id])
+            print(f"✅ Rol del usuario '{user.username}' actualizado a ADMIN en la BD")
         except Exception as e:
-            print(f"⚠️ Error actualizando rol en Supabase: {e}")
-            return empresa
+            print(f"⚠️ Error al actualizar rol en la BD: {str(e)}")
+
+        # --- 2️⃣ Sincronizar grupo en Django ---
+        try:
+            admin_group, _ = Group.objects.get_or_create(name=Roles.ADMIN)
+            user.groups.add(admin_group)
+            print(f"✅ Usuario {user.email} asignado correctamente al grupo 'admin' en Django.")
+        except Exception as e:
+            print(f"⚠️ Error actualizando grupo en Django: {e}")
+
+        return empresa
 @api_view(['GET'])
 @permission_classes([permissions.AllowAny])  # Permite acceso a cualquier usuario
 def listar_empresas(request):
@@ -3061,7 +2901,19 @@ def asignar_rrhh_a_vacante(request, vacante_id):
         return Response({'error': f'El RRHH {rrhh_user.username} ya está asignado a esta vacante.'}, status=status.HTTP_400_BAD_REQUEST)
 
     # Crear la asignación (guardamos el id en la tabla como antes)
-    asignacion = VacanteRRHH.objects.create(vacante=vacante, rrhh_user=rrhh_user)
+    try:
+        asignacion = VacanteRRHH.objects.create(vacante=vacante, rrhh_user=rrhh_user)
+    except Exception as e:
+        logger.exception("Error creando asignacion RRHH-vacante")
+        detail = str(e) if settings.DEBUG else "Error interno"
+        return Response(
+            {
+                'error': 'No se pudo asignar el usuario a la vacante. Intente nuevamente.',
+                'detail': detail,
+                'hint': "Revise migraciones pendientes con 'python manage.py migrate'.",
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
     return Response({
         'message': f'El RRHH {rrhh_user.username} ({rrhh_user.email}) ha sido asignado correctamente a la vacante {vacante.titulo}.',
@@ -3080,15 +2932,15 @@ class UserViewSet(viewsets.ModelViewSet):
 
 class UsuarioViewSet(viewsets.ViewSet):
     """
-    Gestión de usuarios con Supabase.
+    Gestión de usuarios con ORM de Django.
     """
     permission_classes = [IsAdminUserOrReadSelf]
 
     def list(self, request):
         if request.user.role != "admin":
             return Response({"detail": "No autorizado"}, status=status.HTTP_403_FORBIDDEN)
-        resp = supabase.table("usuarios").select("*").execute()
-        return Response(resp.data or [], status=status.HTTP_200_OK)
+        usuarios = User.objects.all().values("id", "username", "email", "first_name", "last_name")
+        return Response(list(usuarios), status=status.HTTP_200_OK)
 
     def create(self, request):
         if request.user.role != "admin":
@@ -3103,34 +2955,50 @@ class UsuarioViewSet(viewsets.ViewSet):
         return Response({"message": "Usuario creado exitosamente", "usuario": usuario}, status=status.HTTP_201_CREATED)
 
     def retrieve(self, request, pk=None):
-        q = supabase.table("usuarios").select("*").eq("id", pk).execute()
-        data = q.data or []
-        if not data:
+        usuario = User.objects.filter(id=pk).first()
+        if not usuario:
             return Response({"detail": "Usuario no encontrado"}, status=status.HTTP_404_NOT_FOUND)
-        usuario = data[0]
-        if request.user.role != "admin" and usuario.get("email") != request.user.email:
+        if request.user.role != "admin" and usuario.email != request.user.email:
             return Response({"detail": "No autorizado"}, status=status.HTTP_403_FORBIDDEN)
-        return Response(usuario, status=status.HTTP_200_OK)
+        return Response({
+            "id": usuario.id,
+            "username": usuario.username,
+            "email": usuario.email,
+            "first_name": usuario.first_name,
+            "last_name": usuario.last_name,
+            "role": getattr(usuario, "role", None),
+        }, status=status.HTTP_200_OK)
 
     def partial_update(self, request, pk=None):
-        q = supabase.table("usuarios").select("*").eq("id", pk).execute()
-        data = q.data or []
-        if not data:
+        usuario = User.objects.filter(id=pk).first()
+        if not usuario:
             return Response({"detail": "Usuario no encontrado"}, status=status.HTTP_404_NOT_FOUND)
-        usuario = data[0]
 
-        if request.user.role != "admin" and usuario.get("email") != request.user.email:
+        if request.user.role != "admin" and usuario.email != request.user.email:
             return Response({"detail": "No autorizado"}, status=status.HTTP_403_FORBIDDEN)
+
+        if request.user.role != "admin":
             forbidden = set(request.data.keys()) & {"rol", "email", "id"}
             if forbidden:
                 return Response({"detail": "No autorizado para cambiar esos campos"}, status=status.HTTP_403_FORBIDDEN)
 
-        update_payload = request.data.copy()
         try:
-            resp = supabase.table("usuarios").update(update_payload).eq("id", pk).execute()
+            for field in ["username", "first_name", "last_name", "email"]:
+                if field in request.data:
+                    setattr(usuario, field, request.data.get(field))
+            if "rol" in request.data and request.user.role == "admin" and hasattr(usuario, "role"):
+                usuario.role = normalize_role(request.data.get("rol"))
+            usuario.save()
         except Exception as e:
             return Response({"detail": f"Error al actualizar: {e}"}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(resp.data[0] if resp.data else {}, status=status.HTTP_200_OK)
+        return Response({
+            "id": usuario.id,
+            "username": usuario.username,
+            "email": usuario.email,
+            "first_name": usuario.first_name,
+            "last_name": usuario.last_name,
+            "role": getattr(usuario, "role", None),
+        }, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["post"], url_path="crear_con_rol")
     def crear_con_rol(self, request):
@@ -3148,12 +3016,12 @@ class UsuarioViewSet(viewsets.ViewSet):
         except Exception as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-        group_res = supabase.table("auth_group").select("id").eq("name", rol).execute()
-        if not group_res.data:
-            return Response({"detail": f"El rol '{rol}' no existe"}, status=status.HTTP_404_NOT_FOUND)
-        group_id = group_res.data[0]["id"]
+        user_obj = User.objects.filter(email=usuario["email"]).first()
+        if not user_obj:
+            return Response({"detail": "Usuario creado pero no encontrado"}, status=status.HTTP_404_NOT_FOUND)
 
-        supabase.table("auth_user_groups").insert({"user_id": usuario["id"], "group_id": group_id}).execute()
+        group_obj, _ = Group.objects.get_or_create(name=rol)
+        user_obj.groups.add(group_obj)
         return Response({"message": f"Usuario '{usuario['email']}' creado con rol '{rol}'"}, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["patch"], url_path="actualizar_rol")
@@ -3163,7 +3031,19 @@ class UsuarioViewSet(viewsets.ViewSet):
         nuevo_rol = request.data.get("rol")
         if not nuevo_rol:
             return Response({"detail": "Debe especificar el nuevo rol"}, status=status.HTTP_400_BAD_REQUEST)
-        group_res = supabase
+        usuario = User.objects.filter(id=pk).first()
+        if not usuario:
+            return Response({"detail": "Usuario no encontrado"}, status=status.HTTP_404_NOT_FOUND)
+
+        normalized_role = normalize_role(nuevo_rol)
+        if hasattr(usuario, "role"):
+            usuario.role = normalized_role
+            usuario.save(update_fields=["role"])
+
+        group_obj, _ = Group.objects.get_or_create(name=normalized_role)
+        usuario.groups.clear()
+        usuario.groups.add(group_obj)
+        return Response({"message": "Rol actualizado correctamente"}, status=status.HTTP_200_OK)
 
     
 # ----------------------------
@@ -3189,36 +3069,20 @@ class PasswordResetRequestView(APIView):
         token = default_token_generator.make_token(user)
         uid = urlsafe_base64_encode(force_bytes(user.pk))
 
-        # Cambia esto por el dominio real de tu frontend
-        FRONTEND_URL = "https://front-talento-h.vercel.app"
+        frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:3000").rstrip("/")
+        reset_link = f"{frontend_url}/reset-password/{uid}/{token}/"
 
-        reset_link = f"{FRONTEND_URL}/reset-password/{uid}/{token}/"
-
-        # Contenido del correo
-        asunto = "Restablecer tu contraseña"
-        mensaje = f"""
-Hola {user.username},
-
-Recibimos una solicitud para restablecer tu contraseña.
-
-Haz clic en el enlace para continuar:
-{reset_link}
-
-Si tú no solicitaste esto, simplemente ignora este mensaje.
-
-Saludos,
-Equipo Talento Hub
-"""
-
-        # Preparar correo SendGrid
+        # Enviar correo de restablecimiento con plantilla
         try:
-            send_mail(
-                      subject=asunto,
-                      message=mensaje,
-                      from_email=settings.DEFAULT_FROM_EMAIL,
-                      recipient_list=[email],
-                      fail_silently=False
-                     )
+            send_template_email(
+                template_key="password_reset",
+                recipient_list=[email],
+                context={
+                    "username": user.username,
+                    "reset_link": reset_link,
+                },
+                fail_silently=False,
+            )
             print("📧 Correo enviado correctamente por SMTP")
         except Exception as e:
             print("❌ Error enviando correo:", e)
@@ -3230,8 +3094,17 @@ Equipo Talento Hub
 class PasswordResetConfirmView(APIView):
     permission_classes = []
 
-    def post(self, request, uidb64, token):
-        password = request.data.get("password")
+    def post(self, request, uidb64=None, token=None):
+        # Soporta ambos formatos:
+        # 1) /password-reset-confirm/<uidb64>/<token>/ + {"password": "..."}
+        # 2) /password-reset-confirm/ + {"uid": "...", "token": "...", "password"|"new_password": "..."}
+        uidb64 = uidb64 or request.data.get("uid")
+        token = token or request.data.get("token")
+        password = request.data.get("password") or request.data.get("new_password")
+
+        if not uidb64 or not token:
+            return Response({"detail": "Se requieren uid y token"}, status=status.HTTP_400_BAD_REQUEST)
+
         if not password:
             return Response({"detail": "Se requiere nueva contraseña"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -3253,23 +3126,15 @@ class PerfilView(APIView):
 
     def get(self, request):
         user = request.user
-        
-        response = supabase.table("auth_user").select("*").eq("email", user.email).execute()
-
-        if not response.data:
-            return Response({"error": "Usuario no encontrado en Supabase"}, status=404)
-
-        perfil = response.data[0]
-
         datos_filtrados = {
-            "id": perfil.get("id"),
-            "username": perfil.get("username"),
-            "first_name": perfil.get("first_name"),
-            "last_name": perfil.get("last_name"),
-            "email": perfil.get("email"),
-            "role": perfil.get("role"),
-            "date_joined": perfil.get("date_joined"),
-            "last_login": perfil.get("last_login"),
+            "id": user.id,
+            "username": user.username,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "email": user.email,
+            "role": normalize_role(getattr(user, "role", None) or get_supabase_role(user)),
+            "date_joined": user.date_joined,
+            "last_login": user.last_login,
         }
 
         return Response(datos_filtrados)
@@ -3317,31 +3182,13 @@ class PerfilUsuarioView(APIView):
             # ======================
             foto = request.FILES.get("foto_perfil")
             if foto:
-                path_new = f"{request.user.id}/foto/{int(time.time())}_{foto.name}"
                 foto_bytes = foto.read()
-
-                supabase.storage.from_("perfiles").upload(path_new, foto_bytes)
-
-                public_url_resp = supabase.storage.from_("perfiles").get_public_url(path_new)
-                public_url = (
-                    public_url_resp.get("publicURL")
-                    if isinstance(public_url_resp, dict)
-                    else public_url_resp
+                public_url = _upload_to_cloudinary(
+                    file_bytes=foto_bytes,
+                    folder=f"perfiles/{request.user.id}/foto",
+                    filename=foto.name,
+                    resource_type="image",
                 )
-
-                # Eliminar archivo viejo si existe
-                old_photo = perfil.foto_perfil
-                if old_photo and isinstance(old_photo, str) and old_photo.startswith(
-                    f"{settings.SUPABASE_URL}/storage/v1/object/public/perfiles/"
-                ):
-                    old_path = old_photo.replace(
-                        f"{settings.SUPABASE_URL}/storage/v1/object/public/perfiles/",
-                        ""
-                    )
-                    try:
-                        supabase.storage.from_("perfiles").remove([old_path])
-                    except:
-                        pass
 
                 perfil.foto_perfil = public_url
                 perfil.save(update_fields=["foto_perfil"])
@@ -3351,31 +3198,13 @@ class PerfilUsuarioView(APIView):
             # ======================
             hoja = request.FILES.get("hoja_vida")
             if hoja:
-                path = f"{request.user.id}/hoja_vida/{int(time.time())}_{hoja.name}"
                 hoja_bytes = hoja.read()
-
-                supabase.storage.from_("perfiles").upload(path, hoja_bytes)
-
-                public_url_resp = supabase.storage.from_("perfiles").get_public_url(path)
-                public_url = (
-                    public_url_resp.get("publicURL")
-                    if isinstance(public_url_resp, dict)
-                    else public_url_resp
+                public_url = _upload_to_cloudinary(
+                    file_bytes=hoja_bytes,
+                    folder=f"perfiles/{request.user.id}/hoja_vida",
+                    filename=hoja.name,
+                    resource_type="raw",
                 )
-
-                # Eliminar anterior
-                old_cv = perfil.hoja_vida
-                if old_cv and isinstance(old_cv, str) and old_cv.startswith(
-                    f"{settings.SUPABASE_URL}/storage/v1/object/public/perfiles/"
-                ):
-                    old_path = old_cv.replace(
-                        f"{settings.SUPABASE_URL}/storage/v1/object/public/perfiles/",
-                        ""
-                    )
-                    try:
-                        supabase.storage.from_("perfiles").remove([old_path])
-                    except:
-                        pass
 
                 perfil.hoja_vida = public_url
                 perfil.save(update_fields=["hoja_vida"])
@@ -3412,22 +3241,12 @@ class PerfilUsuarioView(APIView):
         # ==============================
         foto = request.FILES.get("foto_perfil")
         if foto:
-            ext = foto.name.split(".")[-1]
-            file_key = f"{request.user.id}/foto/{int(time.time())}.{ext}"
-
-            # Eliminar foto anterior
-            old_photo = perfil.foto_perfil
-            if old_photo and isinstance(old_photo, str) and "perfiles/" in old_photo:
-                old_path = old_photo.split("/public/perfiles/")[-1]
-                try:
-                    supabase.storage.from_("perfiles").remove([old_path])
-                except:
-                    pass
-
-            supabase.storage.from_("perfiles").upload(file_key, foto.read())
-
-            foto_url_resp = supabase.storage.from_("perfiles").get_public_url(file_key)
-            foto_url = foto_url_resp.get("publicURL") if isinstance(foto_url_resp, dict) else foto_url_resp
+            foto_url = _upload_to_cloudinary(
+                file_bytes=foto.read(),
+                folder=f"perfiles/{request.user.id}/foto",
+                filename=foto.name,
+                resource_type="image",
+            )
 
             perfil.foto_perfil = foto_url
             perfil.save(update_fields=["foto_perfil"])
@@ -3437,22 +3256,12 @@ class PerfilUsuarioView(APIView):
         # ==============================
         hoja = request.FILES.get("hoja_vida")
         if hoja:
-            ext = hoja.name.split(".")[-1]
-            file_key = f"{request.user.id}/hoja_vida/{int(time.time())}.{ext}"
-
-            # Eliminar CV anterior
-            old_cv = perfil.hoja_vida
-            if old_cv and isinstance(old_cv, str) and "perfiles/" in old_cv:
-                old_path = old_cv.split("/public/perfiles/")[-1]
-                try:
-                    supabase.storage.from_("perfiles").remove([old_path])
-                except:
-                    pass
-
-            supabase.storage.from_("perfiles").upload(file_key, hoja.read())
-
-            cv_url_resp = supabase.storage.from_("perfiles").get_public_url(file_key)
-            cv_url = cv_url_resp.get("publicURL") if isinstance(cv_url_resp, dict) else cv_url_resp
+            cv_url = _upload_to_cloudinary(
+                file_bytes=hoja.read(),
+                folder=f"perfiles/{request.user.id}/hoja_vida",
+                filename=hoja.name,
+                resource_type="raw",
+            )
 
             perfil.hoja_vida = cv_url
             perfil.save(update_fields=["hoja_vida"])
@@ -3490,15 +3299,58 @@ class FavoritosView(APIView):
     # ---------------------------
     def post(self, request):
         rrhh = request.user.id
-        candidato_id = request.data.get("candidato_id")
+        candidato_id = request.data.get("candidato_id") or request.data.get("id_candidato")
+        postulacion_id = request.data.get("postulacion_id") or request.data.get("id_postulacion")
 
-        if not candidato_id:
-            return Response({"error": "Debe enviar candidato_id"}, status=400)
+        if not candidato_id and not postulacion_id:
+            return Response(
+                {"error": "Debe enviar candidato_id o postulacion_id."},
+                status=400,
+            )
 
-        favorito, creado = Favorito.objects.get_or_create(
-            rrhh_id=rrhh,
-            candidato_id=candidato_id
-        )
+        if postulacion_id and not candidato_id:
+            try:
+                postulacion_id = int(postulacion_id)
+                if postulacion_id <= 0:
+                    raise ValueError()
+            except (TypeError, ValueError):
+                return Response({"error": "postulacion_id debe ser un entero válido."}, status=400)
+
+            postulacion = Postulacion.objects.filter(id=postulacion_id).select_related("candidato").first()
+            if not postulacion or not postulacion.candidato_id:
+                return Response({"error": "Postulación no encontrada."}, status=404)
+            candidato_id = postulacion.candidato_id
+
+        try:
+            candidato_id = int(candidato_id)
+            if candidato_id <= 0:
+                raise ValueError()
+        except (TypeError, ValueError):
+            return Response({"error": "candidato_id debe ser un entero válido."}, status=400)
+
+        candidato = User.objects.filter(id=candidato_id).first()
+        if not candidato:
+            return Response({"error": "Candidato no encontrado."}, status=404)
+
+        candidato_role = normalize_role(getattr(candidato, "role", None) or get_supabase_role(candidato))
+        # Solo bloquear roles explícitamente no-candidato para evitar falsos negativos
+        # cuando el rol llega nulo o con un valor legacy.
+        if candidato_role in (Roles.ADMIN, Roles.EMPLEADO_RRHH):
+            return Response(
+                {
+                    "error": "Solo se pueden marcar usuarios con rol candidato.",
+                    "rol_detectado": candidato_role,
+                },
+                status=400,
+            )
+
+        try:
+            favorito, creado = Favorito.objects.get_or_create(
+                rrhh_id=rrhh,
+                candidato_id=candidato_id
+            )
+        except Exception as e:
+            return Response({"error": f"No fue posible guardar el favorito: {str(e)}"}, status=400)
 
         if not creado:
             return Response({"message": "El candidato ya está marcado como favorito."})
@@ -3514,6 +3366,13 @@ class FavoritosView(APIView):
         if not candidato_id:
             return Response({"error": "Debe enviar candidato_id en la URL"}, status=400)
 
+        try:
+            candidato_id = int(candidato_id)
+            if candidato_id <= 0:
+                raise ValueError()
+        except (TypeError, ValueError):
+            return Response({"error": "candidato_id debe ser un entero válido."}, status=400)
+
         eliminado = Favorito.objects.filter(
             rrhh_id=rrhh,
             candidato_id=candidato_id
@@ -3528,10 +3387,8 @@ class FavoritosView(APIView):
 # Entrevistas
 # ----------------------------
 import logging
-from sendgrid.helpers.mail import Mail, Attachment
-import base64
 from datetime import datetime, timedelta
-from django.core.mail import EmailMessage
+from django.core.mail import EmailMultiAlternatives
 logger = logging.getLogger(__name__)
 
 class EntrevistaView(APIView):
@@ -3571,20 +3428,21 @@ END:VCALENDAR
     # Enviar correo solo texto (SendGrid)
     # ----------------------------
     def enviar_correo(self, entrevista):
-        try:
-            asunto = "Entrevista Programada – Talento Hub"
+                try:
+                        asunto = "Entrevista Programada - Talento Hub"
 
-            candidato = entrevista.postulacion.candidato
-            correo_destino = candidato.email
+                        candidato = entrevista.postulacion.candidato
+                        correo_destino = candidato.email
+                        logo_url = getattr(settings, "TALENTOHUB_LOGO_URL", "")
 
-            mensaje = f"""
+                        mensaje = f"""
 Hola {candidato.first_name},
 
 Tu entrevista ha sido programada exitosamente.
 
 Fecha: {entrevista.fecha}
 Hora: {entrevista.hora}
-Reunión: {entrevista.medio}
+Reunion: {entrevista.medio}
 
 Se adjunta archivo .ics para agregar la entrevista a tu calendario.
 
@@ -3592,23 +3450,50 @@ Saludos,
 Equipo Talento Hub
 """
 
-            email = EmailMessage(
-                subject=asunto,
-                body=mensaje,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                to=[correo_destino],
-             )
+                        html_logo = f'<img src="{logo_url}" alt="Talento Hub" style="max-height:56px; width:auto; margin-bottom:12px;" />' if logo_url else ""
+                        mensaje_html = f"""
+<html>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #1f2937; background: #f5f7fb; padding: 24px;">
+        <div style="max-width: 640px; margin: 0 auto; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden;">
+            <div style="background: linear-gradient(135deg, #0b5ed7, #0a4eb6); color: #ffffff; padding: 24px; text-align: center;">
+                {html_logo}
+                <h2 style="margin: 0; font-size: 22px;">Entrevista Programada</h2>
+            </div>
+            <div style="padding: 24px; color: #374151;">
+                <p>Hola <strong>{candidato.first_name or candidato.username}</strong>,</p>
+                <p>Tu entrevista ha sido programada exitosamente.</p>
+                <div style="background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 16px 0;">
+                    <p style="margin: 0 0 8px 0;"><strong>Fecha:</strong> {entrevista.fecha}</p>
+                    <p style="margin: 0 0 8px 0;"><strong>Hora:</strong> {entrevista.hora}</p>
+                    <p style="margin: 0;"><strong>Reunion:</strong> <a href="{entrevista.medio}">{entrevista.medio}</a></p>
+                </div>
+                <p>Adjuntamos un archivo <strong>.ics</strong> para agregar la entrevista a tu calendario.</p>
+                <p>Saludos,<br/>Equipo Talento Hub</p>
+            </div>
+            <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; color: #6b7280; font-size: 12px; text-align: center;">
+                Talento Hub · Gestion de Candidatos
+            </div>
+        </div>
+    </body>
+</html>
+"""
 
-        # Adjuntar el archivo ICS
-            archivo_ics = self.generar_ics(entrevista)
-            email.attach("entrevista.ics", archivo_ics, "text/calendar")
+                        email = EmailMultiAlternatives(
+                                subject=asunto,
+                                body=mensaje,
+                                from_email=settings.DEFAULT_FROM_EMAIL,
+                                to=[correo_destino],
+                        )
+                        email.attach_alternative(mensaje_html, "text/html")
 
-        # Envío de correo en segundo plano
-            send_async_email(email)
+                        archivo_ics = self.generar_ics(entrevista)
+                        email.attach("entrevista.ics", archivo_ics, "text/calendar")
 
-        except Exception as e:
-            logger.error(f"Error enviando correo async: {e}")
-            print(f"❌ Error enviando correo async: {e}")
+                        send_message_async(email)
+
+                except Exception as e:
+                        logger.error(f"Error enviando correo async: {e}")
+                        print(f"Error enviando correo async: {e}")
 
     # ----------------------------
     # POST → Crear entrevista
@@ -3687,13 +3572,3 @@ Equipo Talento Hub
         entrevista.delete()
         return Response(status=204)
 
-def send_async_email(email_message):
-    def send():
-        try:
-            email_message.send()
-            print("📧 Email enviado correctamente (async)")
-        except Exception as e:
-            print(f"❌ Error enviando correo async: {e}")
-
-    thread = threading.Thread(target=send)
-    thread.start()

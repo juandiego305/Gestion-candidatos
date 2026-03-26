@@ -1,10 +1,10 @@
 from datetime import datetime, timedelta
 from django.conf import settings
-from django.core.mail import send_mail
 from django.http import JsonResponse
 from django.contrib.auth import get_user_model
 import json
 import logging
+from .email_service import send_template_email
 
 logger = logging.getLogger(__name__)
 
@@ -138,15 +138,10 @@ class LoginSecurityMiddleware:
             User = get_user_model()
             user = User.objects.filter(username=username).first() or User.objects.filter(email=username).first()
             user_email = user.email if user else f'{username}@example.com'
-            send_mail(
-                subject='🔒 Cuenta bloqueada temporalmente',
-                message=(
-                    f"Hola,\n\nTu cuenta ha sido bloqueada temporalmente debido a múltiples intentos fallidos de acceso.\n\n"
-                    f"El bloqueo se levantará automáticamente en {minutes_remaining} minutos.\n\n"
-                    "Si no fuiste tú, por favor contacta al administrador.\n\nSaludos,\nSistema de Gestión de Candidatos"
-                ),
-                from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', None),
+            send_template_email(
+                template_key='account_locked',
                 recipient_list=[user_email],
+                context={'minutes_remaining': minutes_remaining},
                 fail_silently=True,
             )
         except Exception as e:

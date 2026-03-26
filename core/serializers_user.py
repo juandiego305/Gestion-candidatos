@@ -5,7 +5,6 @@ from rest_framework.validators import UniqueValidator
 from django.contrib.auth import get_user_model
 from core.models import Roles  # 👈 importa desde models.py
 from .models import PerfilUsuario
-from core.supabase_client import supabase
 
 User = get_user_model()
 
@@ -27,13 +26,20 @@ class UserSerializer(serializers.ModelSerializer):
         user = User(**validated_data)
         user.set_password(password)
         user.is_active = True
-        user.role = role_name
         user.save()
+
+        # Guardar el role correctamente en auth_user (usando raw SQL porque Django no reconoce el campo role)
+        from django.db import connection
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute('UPDATE auth_user SET role = %s WHERE id = %s', [role_name, user.id])
+        except Exception as e:
+            print(f"⚠️ Error al guardar el role: {str(e)}")
 
         group, _ = Group.objects.get_or_create(name=role_name)
         user.groups.add(group)
 
-        print(f"📩 Correo enviado a {user.email}: ¡Bienvenido a la plataforma!")
+        print(f"✅ Usuario {user.email} registrado con rol '{role_name}' correctamente")
 
         return user
     
@@ -46,11 +52,23 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
         groups = [group.name for group in user.groups.all()] if user and user.pk else []
 
+        # Obtener role directamente de la BD (campo en auth_user, no en modelo Django)
+        from django.db import connection
+        role = Roles.CANDIDATO
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT role FROM auth_user WHERE id = %s', [user.id])
+                row = cursor.fetchone()
+                if row and row[0]:
+                    role = row[0]
+        except Exception:
+            pass
+
         data.update({
             "id": user.id,
             "username": user.username,
             "email": user.email,
-            "role": getattr(user, "role", None),
+            "role": role,
             "groups": groups,
         })
 

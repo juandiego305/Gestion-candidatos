@@ -19,7 +19,7 @@ class Roles:
     ]
 
 
-   
+
 # ────────────────────────────────────────────────
 # EMPRESA
 # ────────────────────────────────────────────────
@@ -33,7 +33,9 @@ class Empresa(models.Model):
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
-        related_name="empresas"
+            related_name="empresas",
+            null=True,
+            blank=True,
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -61,7 +63,9 @@ class Vacante(models.Model):
         'core.Empresa',
         on_delete=models.CASCADE,
         db_column='id_empresa',
-        related_name='vacantes'
+           related_name='vacantes',
+           null=True,
+           blank=True,
     )
     titulo = models.CharField(max_length=200)
     descripcion = models.TextField()
@@ -85,7 +89,9 @@ class Vacante(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         db_column='creado_por_id',
-        related_name='vacantes_creadas'
+           related_name='vacantes_creadas',
+           null=True,
+           blank=True,
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -93,7 +99,6 @@ class Vacante(models.Model):
 
     class Meta:
         db_table = 'core_vacantes'   # 👈 nombre EXACTO de la tabla
-        managed = False              # 👈 no tocará la tabla con migraciones
 
     def __str__(self):
         return f"Vacante: {self.titulo} - Empresa: {self.id_empresa.nombre}"
@@ -103,13 +108,12 @@ class Vacante(models.Model):
 # ────────────────────────────────────────────────
 class VacanteRRHH(models.Model):
     # Mapeo explícito a las columnas que existen en la tabla SQL creada por el usuario
-    vacante = models.ForeignKey(Vacante, on_delete=models.CASCADE, db_column='vacante_id')
-    rrhh_user = models.ForeignKey(User, on_delete=models.CASCADE, db_column='user_id')  # columna en la BD: user_id
+    vacante = models.ForeignKey(Vacante, on_delete=models.CASCADE, db_column='vacante_id', null=True, blank=True)
+    rrhh_user = models.ForeignKey(User, on_delete=models.CASCADE, db_column='user_id', null=True, blank=True)  # columna en la BD: user_id
     fecha_asignacion = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'core_vacante_rrhh'  # nombre real de la tabla creada en la BD
-        managed = False                # la tabla ya existe en Supabase/Postgres
         unique_together = ('vacante', 'rrhh_user')  # Garantiza que solo un RRHH esté asignado a una vacante
 
     def __str__(self):
@@ -123,12 +127,13 @@ class Competencia(models.Model):
         on_delete=models.CASCADE,
         related_name="competencias",
         db_column="id_vacante",   # 👈 MUY IMPORTANTE
+        null=True,
+        blank=True,
     )
     nombre = models.CharField(max_length=100, null=True, blank=True)
 
     class Meta:
         db_table = "core_competencia"  # 👈 Nombre real de la tabla en Supabase
-        managed = False                # 👈 Para que Django NO intente crear/alterar esta tabla
 
     def __str__(self):
         return self.nombre or f"Competencia {self.id}"
@@ -152,6 +157,8 @@ class Postulacion(models.Model):
         on_delete=models.CASCADE,
         related_name="postulaciones",
         db_column="id_candidato",
+            null=True,
+            blank=True,
     )
 
     vacante = models.ForeignKey(
@@ -159,6 +166,8 @@ class Postulacion(models.Model):
         on_delete=models.CASCADE,
         related_name="postulaciones",
         db_column="id_vacante",
+            null=True,
+            blank=True,
     )
 
     empresa = models.ForeignKey(
@@ -166,6 +175,8 @@ class Postulacion(models.Model):
         on_delete=models.CASCADE,
         related_name="postulaciones",
         db_column="id_empresa",
+            null=True,
+            blank=True,
     )
 
     cv_url = models.URLField(null=True, blank=True)
@@ -177,7 +188,6 @@ class Postulacion(models.Model):
 
     class Meta:
         db_table = "core_postulaciones"
-        managed = False
 
     def __str__(self):
         return f"{self.candidato.username} - {self.empresa.nombre}"
@@ -234,19 +244,22 @@ class Favorito(models.Model):
         User,
         on_delete=models.CASCADE,
         db_column='rrhh_id',
-        related_name='favoritos_marcados'
+           related_name='favoritos_marcados',
+        null=True,
+        blank=True,
     )
     candidato = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
         db_column='candidato_id',
-        related_name='favorito_de'
+           related_name='favorito_de',
+        null=True,
+        blank=True,
     )
     fecha_marcado = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'core_favoritos'
-        managed = False
         unique_together = ('rrhh', 'candidato')
 
     def __str__(self):

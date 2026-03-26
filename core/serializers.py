@@ -1,27 +1,30 @@
-from urllib.parse import urlparse
 from django.db import IntegrityError, transaction
 from django.contrib.auth.models import Group
+from django.contrib.auth import get_user_model
 from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
-from .supabase_client import supabase
-from .models import Entrevista, Favorito, Vacante, Postulacion, Empresa
+import cloudinary.uploader
+from .models import Entrevista, Favorito, Vacante, Postulacion, Empresa, Roles
+
+User = get_user_model()
 
 
 ALLOWED_TYPES = {"image/jpeg", "image/png"}
 
 
-def _storage_key_from_public_url(public_url: str) -> str | None:
-    if not public_url:
-        return None
-    try:
-        path = urlparse(public_url).path
-        marker = "/storage/v1/object/public/logos/"
-        i = path.find(marker)
-        if i == -1:
-            return None
-        return path[i + len(marker):]
-    except Exception:
-        return None
+def _upload_logo_to_cloudinary(file_obj, empresa_id: int) -> str:
+    """Upload logo file to Cloudinary and return secure URL."""
+    original_name = (getattr(file_obj, "name", "logo") or "logo").rsplit(".", 1)[0]
+    safe_name = original_name.replace(" ", "_")
+    result = cloudinary.uploader.upload(
+        file_obj,
+        folder=f"empresas/{empresa_id}/logos",
+        public_id=safe_name,
+        overwrite=True,
+        invalidate=True,
+        resource_type="image",
+    )
+    return result.get("secure_url") or result.get("url")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -72,11 +75,8 @@ class EmpresaSerializer(serializers.ModelSerializer):
 
         # Subir logo si existe
         if file:
-            path = f"{empresa.id}/{file.name}"
-            supabase.storage.from_("logos").upload(
-                path, file.read(), {"content-type": getattr(file, "content_type", "image/png")}
-            )
-            empresa.logo_url = supabase.storage.from_("logos").get_public_url(path)
+            logo_url = _upload_logo_to_cloudinary(file, empresa.id)
+            empresa.logo_url = logo_url
             empresa.save(update_fields=["logo_url"])
 
         # Cambiar rol del dueño
@@ -84,13 +84,9 @@ class EmpresaSerializer(serializers.ModelSerializer):
        # user.role = "admin"
        # user.save(update_fields=["role"])
 
-        # Actualizar en Supabase
-        try:
-            supabase.table("auth_user").update({
-                "role": "admin"
-            }).eq("email", user.email).execute()
-        except Exception as e:
-            print(f"⚠️ No se pudo actualizar el rol en Supabase: {e}")
+        if hasattr(user, "role"):
+            user.role = Roles.ADMIN
+            user.save(update_fields=["role"])
 
         # Agregar grupo en Django
         try:
@@ -108,17 +104,7 @@ class EmpresaSerializer(serializers.ModelSerializer):
                 setattr(instance, f, validated_data[f])
 
         if file:
-            old_key = _storage_key_from_public_url(instance.logo_url or "")
-            if old_key:
-                try:
-                    supabase.storage.from_("logos").remove([old_key])
-                except Exception:
-                    pass
-            path = f"{instance.id}/{file.name}"
-            supabase.storage.from_("logos").upload(
-                path, file.read(), {"content-type": getattr(file, "content_type", "image/png")}
-            )
-            instance.logo_url = supabase.storage.from_("logos").get_public_url(path)
+            instance.logo_url = _upload_logo_to_cloudinary(file, instance.id)
 
         instance.save()
         return instance
@@ -139,43 +125,48 @@ class UsuarioSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, min_length=8)
 
     def validate_email(self, value):
-        # Verificar si el correo ya existe en la tabla de Supabase
-        response = supabase.table("usuarios").select("id").eq("email", value).execute()
-        if response.data:
+        if User.objects.filter(email=value).exists():
             raise serializers.ValidationError("El correo ya está en uso")
         return value
 
     def create(self, validated_data):
-        """
-        Crea el usuario en Supabase (autenticación + tabla de usuarios)
-        """
-        # 1️⃣ Crear el usuario en Supabase Auth
-        try:
-            auth_response = supabase.auth.sign_up({
-                "email": validated_data["email"],
-                "password": validated_data["password"]
-            })
-        except Exception as e:
-            raise serializers.ValidationError({"auth": f"Error al registrar el usuario: {e}"})
+        email = validated_data["email"]
+        nombre = validated_data["nombre"]
+        password = validated_data["password"]
 
-        if not getattr(auth_response, "user", None):
-            raise serializers.ValidationError({"auth": "No se pudo crear el usuario en Supabase Auth"})
+        username_base = email.split("@")[0]
+        username = username_base
+        n = 1
+        while User.objects.filter(username=username).exists():
+            username = f"{username_base}{n}"
+            n += 1
 
-        user_id = auth_response.user.id
+        user = User.objects.create_user(
+            username=username,
+            email=email,
+            password=password,
+            first_name=nombre,
+            is_active=True,
+        )
 
-        # 2️⃣ Guardar datos adicionales en la tabla "usuarios"
-        response = supabase.table("usuarios").insert({
-            "id": user_id,
-            "email": validated_data["email"],
-            "nombre": validated_data["nombre"],
-            "rol": validated_data["rol"],
-            "activo": True,
-        }).execute()
+        rol_raw = (validated_data.get("rol") or "").strip().lower()
+        role_map = {
+            "administrador": Roles.ADMIN,
+            "recursos humanos": Roles.EMPLEADO_RRHH,
+            "usuario": Roles.CANDIDATO,
+        }
+        role = role_map.get(rol_raw, Roles.CANDIDATO)
+        if hasattr(user, "role"):
+            user.role = role
+            user.save(update_fields=["role"])
 
-        if not response.data:
-            raise serializers.ValidationError("Error al registrar los datos del usuario en la base de datos")
-
-        return response.data[0]
+        return {
+            "id": user.id,
+            "email": user.email,
+            "nombre": user.first_name,
+            "rol": role,
+            "activo": user.is_active,
+        }
 
 
 
@@ -195,10 +186,14 @@ class FavoritoSerializer(serializers.ModelSerializer):
         read_only_fields = ('fecha_marcado',)
 
     def get_email_candidato(self, obj):
-        return obj.candidato.email
+        candidato = getattr(obj, "candidato", None)
+        return getattr(candidato, "email", None)
 
     def get_nombre_candidato(self, obj):
-        return f"{obj.candidato.first_name} {obj.candidato.last_name}".strip()
+        candidato = getattr(obj, "candidato", None)
+        if not candidato:
+            return None
+        return f"{candidato.first_name} {candidato.last_name}".strip() or candidato.username
     
 
 class EntrevistaSerializer(serializers.ModelSerializer):

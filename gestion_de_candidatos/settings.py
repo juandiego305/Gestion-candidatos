@@ -13,16 +13,15 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 from pathlib import Path
 import os
 from dotenv import load_dotenv
-import dj_database_url
+load_dotenv(override=True)
+
+
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env", override=True)
 
-DATABASES = {
-    'default': dj_database_url.config(default=os.getenv('DATABASE_URL'))
-}
 
 
 
@@ -52,7 +51,10 @@ INSTALLED_APPS = [
     "rest_framework.authtoken",
     "drf_spectacular",
     "drf_spectacular_sidecar",
-    'corsheaders'
+    'corsheaders',
+    'cloudinary',
+    'cloudinary_storage',
+
 ]
 
 
@@ -115,18 +117,36 @@ WSGI_APPLICATION = 'gestion_de_candidatos.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
+from urllib.parse import parse_qsl, urlparse
 
+database_url = (os.getenv("DATABASE_URL") or "").strip().strip("'\"")
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'postgres',  # Base de datos por defecto en Supabase
-        'USER': 'postgres.fkpjhyjcexhhbljexrbb',  # Tu usuario completo
-        'PASSWORD': '4sLsg873jktoN3vn',  # Tu contraseña
-        'HOST': 'aws-1-us-east-2.pooler.supabase.com',  # Host correcto de Supabase
-        'PORT': 5432,  # Puerto correcto
+if database_url:
+    parsed_db_url = urlparse(database_url)
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': parsed_db_url.path.lstrip('/'),
+            'USER': parsed_db_url.username,
+            'PASSWORD': parsed_db_url.password,
+            'HOST': parsed_db_url.hostname,
+            'PORT': parsed_db_url.port or 5432,
+            'OPTIONS': dict(parse_qsl(parsed_db_url.query)),
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv('POSTGRES_DB', 'postgres'),
+            'USER': os.getenv('POSTGRES_USER', 'postgres'),
+            'PASSWORD': os.getenv('POSTGRES_PASSWORD', ''),
+            'HOST': os.getenv('POSTGRES_HOST', 'localhost'),
+            'PORT': int(os.getenv('POSTGRES_PORT', '5432')),
+        }
+    }
+
+
 
 
 # Password validation
@@ -172,30 +192,32 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 # ============================================
-# CONFIGURACIÓN DE EMAIL CON SENDGRID
+# CONFIGURACIÓN DE EMAIL
 # ============================================
 
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "talentohub2025@gmail.com")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+TALENTOHUB_LOGO_URL = os.getenv(
+    "TALENTOHUB_LOGO_URL",
+    "https://res.cloudinary.com/dfsay4h0e/image/upload/v1774536590/logo_talento_zhopuw.png",
+)
 
-# Backend SMTP (NO usar sendgrid_backend)
+# Backend SMTP Gmail
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-
-# Configuración SMTP de SendGrid
-EMAIL_HOST = "smtp.sendgrid.net"
+EMAIL_HOST = "smtp.gmail.com"
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = "apikey"  # Fijo, no cambia nunca
-EMAIL_HOST_PASSWORD = SENDGRID_API_KEY
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "talentohub2025@gmail.com")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
 
 EMAIL_TIMEOUT = 30
+EMAIL_MAX_RETRIES = int(os.getenv("EMAIL_MAX_RETRIES", "2"))
+EMAIL_RETRY_BACKOFF_SECONDS = float(os.getenv("EMAIL_RETRY_BACKOFF_SECONDS", "1.0"))
 
-print("✅ SendGrid SMTP activado correctamente")
+print("✅ Email SMTP (Gmail) configurado correctamente")
 
 
 
-# === Configuración de Supabase ===
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 
