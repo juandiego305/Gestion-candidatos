@@ -205,13 +205,14 @@ TALENTOHUB_LOGO_URL = os.getenv(
 
 # Backend SMTP Gmail
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-EMAIL_HOST = "smtp.gmail.com"
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
+EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "true").lower() == "true"
+EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "false").lower() == "true"
 EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "talentohub2025@gmail.com")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
 
-EMAIL_TIMEOUT = 30
+EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "30"))
 EMAIL_MAX_RETRIES = int(os.getenv("EMAIL_MAX_RETRIES", "2"))
 EMAIL_RETRY_BACKOFF_SECONDS = float(os.getenv("EMAIL_RETRY_BACKOFF_SECONDS", "1.0"))
 

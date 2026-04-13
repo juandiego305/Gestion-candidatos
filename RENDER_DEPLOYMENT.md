@@ -30,11 +30,29 @@ SUPABASE_SERVICE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS
 
 EMAIL_HOST_USER=talentohub2025@gmail.com
 EMAIL_HOST_PASSWORD=ejsu oaiq zivq zdus
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USE_TLS=true
+EMAIL_USE_SSL=false
+EMAIL_TIMEOUT=30
 
 PYTHON_VERSION=3.11.0
 ```
 
 **⚠️ IMPORTANTE:** Asegúrate de agregar `EMAIL_HOST_USER` además de `EMAIL_HOST_PASSWORD` para que el envío de correos funcione en producción.
+**⚠️ IMPORTANTE:** La contraseña debe ser una **App Password** de Google, no la contraseña normal de tu cuenta.
+
+### Si falla con 587/TLS
+
+Prueba esta alternativa en Render:
+
+```
+EMAIL_PORT=465
+EMAIL_USE_TLS=false
+EMAIL_USE_SSL=true
+```
+
+Si Render bloquea la conexión SMTP, el error más común será `SMTPAuthenticationError`, `SMTPConnectError` o `TimeoutError` en los logs.
 
 ## Solución de Problemas Comunes
 
