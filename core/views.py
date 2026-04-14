@@ -1332,8 +1332,8 @@ def actualizar_estado_postulacion(request, postulacion_id):
             vacante_obj = postulacion.vacante
             empresa = postulacion.empresa
 
-            print(f"📧 Enviando correo por SendGrid a '{nuevo_estado}' → {candidato.email}")
-            logger.info(f"📧 Enviando correo por SendGrid a '{nuevo_estado}' → {candidato.email}")
+            print(f"📧 Enviando correo SMTP a '{nuevo_estado}' → {candidato.email}")
+            logger.info(f"📧 Enviando correo SMTP a '{nuevo_estado}' → {candidato.email}")
             # Plantillas de correo según estado
             templates = {
                 "En revisión": {
@@ -1911,10 +1911,10 @@ Correo generado automáticamente el {timezone.now().strftime('%d/%m/%Y a las %H:
                     subject=template["asunto"],
                     message=template["mensaje"],
                     recipient_list=[candidato.email],
-                    fail_silently=True,
-                    async_send=True,
+                    fail_silently=False,
+                    async_send=False,
                 )
-                logger.info(f"📧 Correo de estado en cola para {candidato.email}")
+                logger.info(f"📧 Correo de estado enviado para {candidato.email}")
                     
         except Exception as e:
             print(f"❌ Error enviando correo de estado '{nuevo_estado}': {e}")

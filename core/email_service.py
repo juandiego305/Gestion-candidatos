@@ -88,7 +88,7 @@ def send_plain_email(subject, message, recipient_list, fail_silently=False, asyn
         return _send_with_retry(_do_send, fail_silently, f"plain:{subject}")
 
     if async_send:
-        threading.Thread(target=_send, daemon=True).start()
+        threading.Thread(target=_send, daemon=False).start()
         return True
 
     return _send()
@@ -116,7 +116,7 @@ def send_html_email(subject, html_message, recipient_list, message="", fail_sile
         return _send_with_retry(_do_send, fail_silently, f"html:{subject}")
 
     if async_send:
-        threading.Thread(target=_send, daemon=True).start()
+        threading.Thread(target=_send, daemon=False).start()
         return True
 
     return _send()
@@ -133,7 +133,7 @@ def send_message_async(email_message):
 
         _send_with_retry(_do_send, fail_silently=True, context_label="email_message_async")
 
-    threading.Thread(target=_send, daemon=True).start()
+    threading.Thread(target=_send, daemon=False).start()
 
 
 def send_template_email(template_key, recipient_list, context=None, fail_silently=False, async_send=False):
