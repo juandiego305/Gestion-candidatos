@@ -6,19 +6,20 @@ import os
 bind = "0.0.0.0:8000"
 
 # Número de workers (2-4 x núcleos de CPU)
-workers = multiprocessing.cpu_count() * 2 + 1
+# En Render, demasiados workers pueden causar OOM; permitir override por entorno.
+workers = int(os.getenv("WEB_CONCURRENCY", "2"))
 
 # Tipo de workers (sync es el predeterminado, pero puedes usar gevent para async)
 worker_class = "sync"
 
-# Timeout para requests (aumentado a 120 segundos para operaciones lentas)
-timeout = 120*5
+# Timeout para requests (con override por entorno)
+timeout = int(os.getenv("GUNICORN_TIMEOUT", "120"))
 
 # Timeout para mantener conexiones keep-alive
 keepalive = 5
 
-# Timeout para workers silenciosos (aumentado a 120 segundos)
-graceful_timeout = 120*5
+# Timeout para workers silenciosos
+graceful_timeout = int(os.getenv("GUNICORN_GRACEFUL_TIMEOUT", "120"))
 
 # Nivel de log
 loglevel = "info"

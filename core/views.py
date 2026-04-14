@@ -1931,16 +1931,16 @@ Correo generado automáticamente el {timezone.now().strftime('%d/%m/%Y a las %H:
             correo_enviado = False
             
             if template:
-                logger.info(f"📧 Enviando correo SMTP a '{nuevo_estado}' → {candidato.email}")
+                logger.info(f"📧 Encolando envío SMTP para estado '{nuevo_estado}' → {candidato.email}")
                 send_plain_email(
                     subject=template["asunto"],
                     message=template["mensaje"],
                     recipient_list=[candidato.email],
-                    fail_silently=False,
-                    async_send=False,
+                    fail_silently=True,
+                    async_send=True,
                 )
                 correo_enviado = True
-                logger.info(f"📧 Correo de estado enviado para {candidato.email}")
+                logger.info(f"📧 Correo de estado en cola para {candidato.email}")
             else:
                 logger.warning(f"⚠️ No existe plantilla de correo para el estado '{nuevo_estado}'.")
                     
