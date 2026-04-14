@@ -1940,6 +1940,7 @@ Correo generado automáticamente el {timezone.now().strftime('%d/%m/%Y a las %H:
                     async_send=False,
                 )
                 correo_enviado = bool(enviado_ok)
+                print(f"📬 Resultado send_plain_email para {candidato.email}: {correo_enviado}")
                 logger.info(f"📧 Resultado envío correo estado ({nuevo_estado}): {correo_enviado}")
             else:
                 logger.warning(f"⚠️ No existe plantilla de correo para el estado '{nuevo_estado}'.")

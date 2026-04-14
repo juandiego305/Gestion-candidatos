@@ -20,6 +20,7 @@ def _send_via_sendgrid(subject, message, html_message, recipient_list, from_emai
         return False
 
     sg = SendGridAPIClient(api_key)
+    print(f"📮 SendGrid intento de envío: {subject} -> {recipient_list}")
     for recipient in recipient_list:
         mail = Mail(
             from_email=from_email,
@@ -35,6 +36,7 @@ def _send_via_sendgrid(subject, message, html_message, recipient_list, from_emai
             )
 
     logger.info("SendGrid email sent: %s -> %s", subject, recipient_list)
+    print(f"✅ SendGrid envió correo: {subject} -> {recipient_list}")
     return True
 
 
@@ -102,6 +104,7 @@ def send_plain_email(subject, message, recipient_list, fail_silently=False, asyn
         # En producción (Render), priorizar SendGrid (HTTPS) para evitar bloqueos SMTP.
         if sendgrid_api_key:
             logger.info("Email provider selected: SendGrid (primary)")
+            print("🔎 Proveedor correo seleccionado: SendGrid (primario)")
             try:
                 return _send_via_sendgrid(
                     subject,
@@ -111,8 +114,10 @@ def send_plain_email(subject, message, recipient_list, fail_silently=False, asyn
                 )
             except Exception:
                 logger.exception("Primary SendGrid delivery failed for %s; falling back to SMTP", subject)
+                print(f"❌ SendGrid falló para '{subject}', intentando SMTP")
         else:
             logger.info("Email provider selected: SMTP (SendGrid key not configured)")
+            print("🔎 Proveedor correo seleccionado: SMTP (SENDGRID_API_KEY no configurada)")
 
         def _do_send():
             branded_html = _build_branded_html(subject, message)
@@ -142,6 +147,7 @@ def send_plain_email(subject, message, recipient_list, fail_silently=False, asyn
             raise RuntimeError(f"Email delivery failed for {subject}")
         except Exception:
             logger.exception("SMTP delivery failed for %s", subject)
+            print(f"❌ SMTP falló para '{subject}'")
             if fail_silently:
                 return False
             raise
@@ -162,12 +168,15 @@ def send_html_email(subject, html_message, recipient_list, message="", fail_sile
         # En producción (Render), priorizar SendGrid (HTTPS) para evitar bloqueos SMTP.
         if sendgrid_api_key:
             logger.info("Email provider selected: SendGrid (primary)")
+            print("🔎 Proveedor correo seleccionado: SendGrid (primario)")
             try:
                 return _send_via_sendgrid(subject, message, html_message, recipient_list)
             except Exception:
                 logger.exception("Primary SendGrid delivery failed for %s; falling back to SMTP", subject)
+                print(f"❌ SendGrid falló para '{subject}', intentando SMTP")
         else:
             logger.info("Email provider selected: SMTP (SendGrid key not configured)")
+            print("🔎 Proveedor correo seleccionado: SMTP (SENDGRID_API_KEY no configurada)")
 
         def _do_send():
             sent = send_mail(
@@ -196,6 +205,7 @@ def send_html_email(subject, html_message, recipient_list, message="", fail_sile
             raise RuntimeError(f"HTML email delivery failed for {subject}")
         except Exception:
             logger.exception("SMTP delivery failed for %s", subject)
+            print(f"❌ SMTP falló para '{subject}'")
             if fail_silently:
                 return False
             raise
