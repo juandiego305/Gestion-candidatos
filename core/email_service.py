@@ -1,18 +1,20 @@
 import logging
 import threading
 import time
+import base64
 from html import escape
 
 from django.conf import settings
 from django.core.mail import send_mail
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
+from sendgrid.helpers.mail import Attachment, FileContent, FileName, FileType, Disposition
 from .email_templates import render_email_template
 
 logger = logging.getLogger(__name__)
 
 
-def _send_via_sendgrid(subject, message, html_message, recipient_list, from_email=None):
+def _send_via_sendgrid(subject, message, html_message, recipient_list, from_email=None, attachments=None):
     api_key = getattr(settings, "SENDGRID_API_KEY", None)
     from_email = from_email or getattr(settings, "DEFAULT_FROM_EMAIL", None)
 
@@ -29,6 +31,24 @@ def _send_via_sendgrid(subject, message, html_message, recipient_list, from_emai
             plain_text_content=message or "",
             html_content=html_message or "",
         )
+
+        for item in attachments or []:
+            filename, content, mimetype = item
+            if content is None:
+                continue
+            if isinstance(content, str):
+                raw_bytes = content.encode("utf-8")
+            else:
+                raw_bytes = bytes(content)
+
+            encoded = base64.b64encode(raw_bytes).decode("ascii")
+            mail.attachment = Attachment(
+                FileContent(encoded),
+                FileName(filename or "attachment"),
+                FileType(mimetype or "application/octet-stream"),
+                Disposition("attachment"),
+            )
+
         response = sg.send(mail)
         if not 200 <= int(response.status_code) < 300:
             raise RuntimeError(
@@ -226,12 +246,20 @@ def send_message_async(email_message):
             subject = getattr(email_message, "subject", "Notificacion Talento Hub")
             message = getattr(email_message, "body", "")
             from_email = getattr(email_message, "from_email", None)
+            sendgrid_attachments = []
 
             if not recipients:
                 raise ValueError("EmailMessage has no recipients")
 
             # Priorizar SendGrid en producción para evitar bloqueos SMTP en Render.
             if getattr(settings, "SENDGRID_API_KEY", None):
+                for att in getattr(email_message, "attachments", []) or []:
+                    # Django normalmente usa tuplas: (filename, content, mimetype)
+                    if isinstance(att, (tuple, list)) and len(att) >= 3:
+                        sendgrid_attachments.append((att[0], att[1], att[2]))
+                    elif isinstance(att, (tuple, list)) and len(att) == 2:
+                        sendgrid_attachments.append((att[0], att[1], "application/octet-stream"))
+
                 html_message = ""
                 for alt in getattr(email_message, "alternatives", []) or []:
                     mimetype = getattr(alt, "mimetype", None)
@@ -251,8 +279,11 @@ def send_message_async(email_message):
                     html_message=html_message,
                     recipient_list=recipients,
                     from_email=from_email,
+                    attachments=sendgrid_attachments,
                 )
                 logger.info("EmailMessage sent via SendGrid to %s", recipients)
+                if sendgrid_attachments:
+                    print(f"📎 SendGrid adjuntos enviados: {[a[0] for a in sendgrid_attachments]}")
                 return True
 
             email_message.send(fail_silently=False)
