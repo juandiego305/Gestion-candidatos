@@ -101,6 +101,7 @@ def send_plain_email(subject, message, recipient_list, fail_silently=False, asyn
 
         # En producción (Render), priorizar SendGrid (HTTPS) para evitar bloqueos SMTP.
         if sendgrid_api_key:
+            logger.info("Email provider selected: SendGrid (primary)")
             try:
                 return _send_via_sendgrid(
                     subject,
@@ -110,6 +111,8 @@ def send_plain_email(subject, message, recipient_list, fail_silently=False, asyn
                 )
             except Exception:
                 logger.exception("Primary SendGrid delivery failed for %s; falling back to SMTP", subject)
+        else:
+            logger.info("Email provider selected: SMTP (SendGrid key not configured)")
 
         def _do_send():
             branded_html = _build_branded_html(subject, message)
@@ -158,10 +161,13 @@ def send_html_email(subject, html_message, recipient_list, message="", fail_sile
 
         # En producción (Render), priorizar SendGrid (HTTPS) para evitar bloqueos SMTP.
         if sendgrid_api_key:
+            logger.info("Email provider selected: SendGrid (primary)")
             try:
                 return _send_via_sendgrid(subject, message, html_message, recipient_list)
             except Exception:
                 logger.exception("Primary SendGrid delivery failed for %s; falling back to SMTP", subject)
+        else:
+            logger.info("Email provider selected: SMTP (SendGrid key not configured)")
 
         def _do_send():
             sent = send_mail(
