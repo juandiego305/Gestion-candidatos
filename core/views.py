@@ -8,6 +8,7 @@ from rest_framework.decorators import action
 from rest_framework.views import APIView
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
+from urllib.parse import urlencode
 from django.contrib.auth.tokens import default_token_generator
 from django.conf import settings
 from django.core.files.base import ContentFile
@@ -3100,7 +3101,11 @@ class PasswordResetRequestView(APIView):
         uid = urlsafe_base64_encode(force_bytes(user.pk))
 
         frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:3000").rstrip("/")
-        reset_link = f"{frontend_url}/reset-password/{uid}/{token}/"
+        frontend_reset_path = getattr(settings, "FRONTEND_RESET_PASSWORD_PATH", "/reset-password")
+        if not str(frontend_reset_path).startswith("/"):
+            frontend_reset_path = f"/{frontend_reset_path}"
+        query = urlencode({"uid": uid, "token": token})
+        reset_link = f"{frontend_url}{frontend_reset_path}?{query}"
 
         # Enviar correo de restablecimiento con plantilla
         try:

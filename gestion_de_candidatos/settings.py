@@ -198,6 +198,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "talentohub2025@gmail.com")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+FRONTEND_RESET_PASSWORD_PATH = os.getenv("FRONTEND_RESET_PASSWORD_PATH", "/reset-password")
 TALENTOHUB_LOGO_URL = os.getenv(
     "TALENTOHUB_LOGO_URL",
     "https://res.cloudinary.com/dfsay4h0e/image/upload/v1774536590/logo_talento_zhopuw.png",
