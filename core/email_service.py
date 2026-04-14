@@ -5,9 +5,37 @@ from html import escape
 
 from django.conf import settings
 from django.core.mail import send_mail
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
 from .email_templates import render_email_template
 
 logger = logging.getLogger(__name__)
+
+
+def _send_via_sendgrid(subject, message, html_message, recipient_list):
+    api_key = getattr(settings, "SENDGRID_API_KEY", None)
+    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", None)
+
+    if not api_key:
+        return False
+
+    sg = SendGridAPIClient(api_key)
+    for recipient in recipient_list:
+        mail = Mail(
+            from_email=from_email,
+            to_emails=recipient,
+            subject=subject,
+            plain_text_content=message or "",
+            html_content=html_message or "",
+        )
+        response = sg.send(mail)
+        if not 200 <= int(response.status_code) < 300:
+            raise RuntimeError(
+                f"SendGrid returned status {response.status_code} for {recipient}"
+            )
+
+    logger.info("SendGrid email sent: %s -> %s", subject, recipient_list)
+    return True
 
 
 def _build_branded_html(subject, message):
@@ -88,7 +116,24 @@ def send_plain_email(subject, message, recipient_list, fail_silently=False, asyn
                     raise RuntimeError(error_msg)
             return bool(sent)
 
-        return _send_with_retry(_do_send, fail_silently, f"plain:{subject}")
+        try:
+            sent = _send_with_retry(_do_send, fail_silently, f"plain:{subject}")
+            if sent:
+                return True
+        except Exception as smtp_error:
+            logger.warning("SMTP failed for %s, trying SendGrid fallback: %s", subject, smtp_error)
+            if not getattr(settings, "SENDGRID_API_KEY", None):
+                if fail_silently:
+                    return False
+                raise
+
+        try:
+            return _send_via_sendgrid(subject, message, _build_branded_html(subject, message), recipient_list)
+        except Exception:
+            logger.exception("SendGrid fallback failed for %s", subject)
+            if fail_silently:
+                return False
+            raise
 
     if async_send:
         threading.Thread(target=_send, daemon=False).start()
@@ -119,7 +164,24 @@ def send_html_email(subject, html_message, recipient_list, message="", fail_sile
                     raise RuntimeError(error_msg)
             return bool(sent)
 
-        return _send_with_retry(_do_send, fail_silently, f"html:{subject}")
+        try:
+            sent = _send_with_retry(_do_send, fail_silently, f"html:{subject}")
+            if sent:
+                return True
+        except Exception as smtp_error:
+            logger.warning("SMTP failed for %s, trying SendGrid fallback: %s", subject, smtp_error)
+            if not getattr(settings, "SENDGRID_API_KEY", None):
+                if fail_silently:
+                    return False
+                raise
+
+        try:
+            return _send_via_sendgrid(subject, message, html_message, recipient_list)
+        except Exception:
+            logger.exception("SendGrid fallback failed for %s", subject)
+            if fail_silently:
+                return False
+            raise
 
     if async_send:
         threading.Thread(target=_send, daemon=False).start()
