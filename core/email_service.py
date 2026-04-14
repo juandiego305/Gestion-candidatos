@@ -12,9 +12,9 @@ from .email_templates import render_email_template
 logger = logging.getLogger(__name__)
 
 
-def _send_via_sendgrid(subject, message, html_message, recipient_list):
+def _send_via_sendgrid(subject, message, html_message, recipient_list, from_email=None):
     api_key = getattr(settings, "SENDGRID_API_KEY", None)
-    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", None)
+    from_email = from_email or getattr(settings, "DEFAULT_FROM_EMAIL", None)
 
     if not api_key:
         return False
@@ -206,8 +206,41 @@ def send_message_async(email_message):
 
     def _send():
         def _do_send():
+            recipients = list(getattr(email_message, "to", []) or [])
+            subject = getattr(email_message, "subject", "Notificacion Talento Hub")
+            message = getattr(email_message, "body", "")
+            from_email = getattr(email_message, "from_email", None)
+
+            if not recipients:
+                raise ValueError("EmailMessage has no recipients")
+
+            # Priorizar SendGrid en producción para evitar bloqueos SMTP en Render.
+            if getattr(settings, "SENDGRID_API_KEY", None):
+                html_message = ""
+                for alt in getattr(email_message, "alternatives", []) or []:
+                    mimetype = getattr(alt, "mimetype", None)
+                    content = getattr(alt, "content", None)
+                    if mimetype is None and isinstance(alt, (tuple, list)) and len(alt) >= 2:
+                        content, mimetype = alt[0], alt[1]
+                    if mimetype == "text/html":
+                        html_message = content or ""
+                        break
+
+                if not html_message:
+                    html_message = _build_branded_html(subject, message)
+
+                _send_via_sendgrid(
+                    subject=subject,
+                    message=message,
+                    html_message=html_message,
+                    recipient_list=recipients,
+                    from_email=from_email,
+                )
+                logger.info("EmailMessage sent via SendGrid to %s", recipients)
+                return True
+
             email_message.send(fail_silently=False)
-            logger.info("EmailMessage sent to %s", getattr(email_message, "to", []))
+            logger.info("EmailMessage sent via SMTP to %s", recipients)
             return True
 
         _send_with_retry(_do_send, fail_silently=True, context_label="email_message_async")
