@@ -1936,7 +1936,7 @@ Correo generado automáticamente el {timezone.now().strftime('%d/%m/%Y a las %H:
                     subject=template["asunto"],
                     message=template["mensaje"],
                     recipient_list=[candidato.email],
-                    fail_silently=True,
+                    fail_silently=False,
                     async_send=True,
                 )
                 correo_enviado = True
