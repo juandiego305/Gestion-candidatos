@@ -1332,10 +1332,33 @@ def actualizar_estado_postulacion(request, postulacion_id):
             vacante_obj = postulacion.vacante
             empresa = postulacion.empresa
 
-            print(f"📧 Enviando correo SMTP a '{nuevo_estado}' → {candidato.email}")
-            logger.info(f"📧 Enviando correo SMTP a '{nuevo_estado}' → {candidato.email}")
+            print(f"📧 Preparando correo SMTP para estado '{nuevo_estado}' → {candidato.email}")
+            logger.info(f"📧 Preparando correo SMTP para estado '{nuevo_estado}' → {candidato.email}")
             # Plantillas de correo según estado
             templates = {
+                "Postulado": {
+                    "asunto": f"✅ Confirmación de postulación - {vacante_obj.titulo} | {empresa.nombre}",
+                    "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
+
+Hemos registrado correctamente tu postulación.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 RESUMEN DE TU POSTULACIÓN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🏢 Empresa: {empresa.nombre}
+💼 Vacante: {vacante_obj.titulo}
+🔄 Estado actual: POSTULADO ✅
+📅 Fecha de actualización: {timezone.now().strftime('%d/%m/%Y a las %H:%M')}
+🆔 ID de Postulación: #{postulacion.id}
+
+Gracias por confiar en Talento Hub. Te notificaremos cuando haya avances en tu proceso.
+
+Atentamente,
+Equipo de Gestión de Talento Humano
+{empresa.nombre}
+"""
+                },
                 "En revisión": {
                     "asunto": f"🔍 Tu postulación está en revisión - {vacante_obj.titulo} | {empresa.nombre}",
                     "mensaje": f"""Estimado/a {candidato.first_name or candidato.username},
@@ -1905,8 +1928,10 @@ Correo generado automáticamente el {timezone.now().strftime('%d/%m/%Y a las %H:
             }
             
             template = templates.get(nuevo_estado)
+            correo_enviado = False
             
             if template:
+                logger.info(f"📧 Enviando correo SMTP a '{nuevo_estado}' → {candidato.email}")
                 send_plain_email(
                     subject=template["asunto"],
                     message=template["mensaje"],
@@ -1914,7 +1939,10 @@ Correo generado automáticamente el {timezone.now().strftime('%d/%m/%Y a las %H:
                     fail_silently=False,
                     async_send=False,
                 )
+                correo_enviado = True
                 logger.info(f"📧 Correo de estado enviado para {candidato.email}")
+            else:
+                logger.warning(f"⚠️ No existe plantilla de correo para el estado '{nuevo_estado}'.")
                     
         except Exception as e:
             print(f"❌ Error enviando correo de estado '{nuevo_estado}': {e}")
@@ -1927,7 +1955,8 @@ Correo generado automáticamente el {timezone.now().strftime('%d/%m/%Y a las %H:
         logger.info(f"✅ Estado actualizado: {estado_anterior} → {nuevo_estado}")
 
     return Response({
-        "message": "Estado actualizado correctamente. El candidato recibirá una notificación por correo.",
+        "message": "Estado actualizado correctamente.",
+        "correo_enviado": bool(locals().get("correo_enviado", False)),
         "postulacion_id": postulacion.id,
         "nuevo_estado": nuevo_estado
     })

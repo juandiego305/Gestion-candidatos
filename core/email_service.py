@@ -82,7 +82,10 @@ def send_plain_email(subject, message, recipient_list, fail_silently=False, asyn
             if sent:
                 logger.info("Email sent: %s -> %s", subject, recipient_list)
             else:
-                logger.warning("Email not sent (0 messages): %s -> %s", subject, recipient_list)
+                error_msg = f"Email not sent (0 messages): {subject} -> {recipient_list}"
+                logger.warning(error_msg)
+                if not fail_silently:
+                    raise RuntimeError(error_msg)
             return bool(sent)
 
         return _send_with_retry(_do_send, fail_silently, f"plain:{subject}")
@@ -110,7 +113,10 @@ def send_html_email(subject, html_message, recipient_list, message="", fail_sile
             if sent:
                 logger.info("HTML email sent: %s -> %s", subject, recipient_list)
             else:
-                logger.warning("HTML email not sent (0 messages): %s -> %s", subject, recipient_list)
+                error_msg = f"HTML email not sent (0 messages): {subject} -> {recipient_list}"
+                logger.warning(error_msg)
+                if not fail_silently:
+                    raise RuntimeError(error_msg)
             return bool(sent)
 
         return _send_with_retry(_do_send, fail_silently, f"html:{subject}")
