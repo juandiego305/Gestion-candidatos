@@ -97,6 +97,20 @@ def send_plain_email(subject, message, recipient_list, fail_silently=False, asyn
     """Send plain-text email using configured Django backend."""
 
     def _send():
+        sendgrid_api_key = getattr(settings, "SENDGRID_API_KEY", None)
+
+        # En producción (Render), priorizar SendGrid (HTTPS) para evitar bloqueos SMTP.
+        if sendgrid_api_key:
+            try:
+                return _send_via_sendgrid(
+                    subject,
+                    message,
+                    _build_branded_html(subject, message),
+                    recipient_list,
+                )
+            except Exception:
+                logger.exception("Primary SendGrid delivery failed for %s; falling back to SMTP", subject)
+
         def _do_send():
             branded_html = _build_branded_html(subject, message)
             sent = send_mail(
@@ -120,17 +134,11 @@ def send_plain_email(subject, message, recipient_list, fail_silently=False, asyn
             sent = _send_with_retry(_do_send, fail_silently, f"plain:{subject}")
             if sent:
                 return True
-        except Exception as smtp_error:
-            logger.warning("SMTP failed for %s, trying SendGrid fallback: %s", subject, smtp_error)
-            if not getattr(settings, "SENDGRID_API_KEY", None):
-                if fail_silently:
-                    return False
-                raise
-
-        try:
-            return _send_via_sendgrid(subject, message, _build_branded_html(subject, message), recipient_list)
+            if fail_silently:
+                return False
+            raise RuntimeError(f"Email delivery failed for {subject}")
         except Exception:
-            logger.exception("SendGrid fallback failed for %s", subject)
+            logger.exception("SMTP delivery failed for %s", subject)
             if fail_silently:
                 return False
             raise
@@ -146,6 +154,15 @@ def send_html_email(subject, html_message, recipient_list, message="", fail_sile
     """Send HTML email using configured Django backend."""
 
     def _send():
+        sendgrid_api_key = getattr(settings, "SENDGRID_API_KEY", None)
+
+        # En producción (Render), priorizar SendGrid (HTTPS) para evitar bloqueos SMTP.
+        if sendgrid_api_key:
+            try:
+                return _send_via_sendgrid(subject, message, html_message, recipient_list)
+            except Exception:
+                logger.exception("Primary SendGrid delivery failed for %s; falling back to SMTP", subject)
+
         def _do_send():
             sent = send_mail(
                 subject=subject,
@@ -168,17 +185,11 @@ def send_html_email(subject, html_message, recipient_list, message="", fail_sile
             sent = _send_with_retry(_do_send, fail_silently, f"html:{subject}")
             if sent:
                 return True
-        except Exception as smtp_error:
-            logger.warning("SMTP failed for %s, trying SendGrid fallback: %s", subject, smtp_error)
-            if not getattr(settings, "SENDGRID_API_KEY", None):
-                if fail_silently:
-                    return False
-                raise
-
-        try:
-            return _send_via_sendgrid(subject, message, html_message, recipient_list)
+            if fail_silently:
+                return False
+            raise RuntimeError(f"HTML email delivery failed for {subject}")
         except Exception:
-            logger.exception("SendGrid fallback failed for %s", subject)
+            logger.exception("SMTP delivery failed for %s", subject)
             if fail_silently:
                 return False
             raise
