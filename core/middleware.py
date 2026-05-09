@@ -154,3 +154,69 @@ class LoginSecurityMiddleware:
             'blocked_until': lock_until.isoformat(),
             'remaining_minutes': minutes_remaining,
         }, status=403)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# PERMISSION CLASS PARA VALIDAR INACTIVIDAD
+# ════════════════════════════════════════════════════════════════════════════
+
+from rest_framework.permissions import BasePermission
+from rest_framework.exceptions import AuthenticationFailed
+
+class CheckUserInactivityPermission(BasePermission):
+    """
+    Permission class que valida la inactividad del usuario.
+    
+    Se ejecuta DESPUÉS de la autenticación JWT, así que request.user es confiable.
+    Si el usuario no ha hecho ninguna solicitud en los últimos N segundos, rechaza con 401.
+    """
+    
+    def has_permission(self, request, view):
+        # Solo validar para usuarios autenticados
+        if not request.user or not request.user.is_authenticated:
+            return True  # Dejar que otros permisos manejen anónimos
+        
+        from django.core.cache import cache
+        from django.utils import timezone
+        from datetime import datetime
+        
+        inactivity_timeout = getattr(settings, 'INACTIVITY_TIMEOUT', 120)
+        # Mantener el registro de actividad más tiempo que el timeout de inactividad,
+        # para poder detectar expiración al siguiente request.
+        activity_cache_ttl = getattr(settings, 'INACTIVITY_CACHE_TTL', 86400)
+        cache_key = f'user_activity_{request.user.id}'
+        
+        # Verificar última actividad
+        last_activity = cache.get(cache_key)
+        
+        if last_activity is None:
+            # Primera vez o cache expiró - registrar actividad
+            cache.set(cache_key, timezone.now().isoformat(), activity_cache_ttl)
+            return True
+        
+        try:
+            last_activity_dt = last_activity if isinstance(last_activity, datetime) else datetime.fromisoformat(last_activity)
+            current_time = timezone.now()
+            time_elapsed = (current_time - last_activity_dt).total_seconds()
+            
+            if time_elapsed > inactivity_timeout:
+                # Usuario inactivo - rechazar
+                logger.warning(
+                    f'Usuario {request.user.username} rechazado por inactividad. '
+                    f'Tiempo sin actividad: {time_elapsed:.0f}s (timeout: {inactivity_timeout}s)'
+                )
+                msg = f'Tu sesión ha expirado por inactividad (sin actividad por {int(time_elapsed)}s).'
+                raise AuthenticationFailed({
+                    'error_code': 'SESSION_TIMEOUT',
+                    'detail': msg
+                })
+            
+            # Renovar timestamp de actividad
+            cache.set(cache_key, timezone.now().isoformat(), activity_cache_ttl)
+            return True
+            
+        except AuthenticationFailed:
+            raise
+        except Exception as e:
+            logger.error(f'Error validando inactividad: {e}')
+            return True  # Permitir si hay error, no romper la app

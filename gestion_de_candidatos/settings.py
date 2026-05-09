@@ -67,7 +67,9 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
+        "core.middleware.CheckUserInactivityPermission",
     ],
+    "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
@@ -218,6 +220,45 @@ EMAIL_MAX_RETRIES = int(os.getenv("EMAIL_MAX_RETRIES", "2"))
 EMAIL_RETRY_BACKOFF_SECONDS = float(os.getenv("EMAIL_RETRY_BACKOFF_SECONDS", "1.0"))
 
 print("✅ Email SMTP (Gmail) configurado correctamente")
+
+
+# ============================================
+# CONFIGURACIÓN DE JWT (Simple JWT)
+# ============================================
+from datetime import timedelta
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=30),  # Token válido por 30 días (se rechaza por inactividad, no por expiración)
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=365),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': False,
+    'UPDATE_LAST_LOGIN': False,
+    'ALGORITHM': 'HS256',
+    'SIGNING_KEY': SECRET_KEY,
+    'VERIFYING_KEY': None,
+    'AUDIENCE': None,
+    'ISSUER': None,
+    'JTI_CLAIM': 'jti',
+    'TOKEN_TYPE_CLAIM': 'token_type',
+    'USER_ID_FIELD': 'id',
+    'USER_ID_CLAIM': 'user_id',
+    'USER_AUTHENTICATION_RULE': 'rest_framework_simplejwt.authentication.default_user_authentication_rule',
+}
+
+# ============================================
+# CONFIGURACIÓN DE CACHES (para inactividad)
+# ============================================
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'talenthub-cache',
+    }
+}
+
+# Timeout de inactividad en segundos (2 minutos para pruebas)
+INACTIVITY_TIMEOUT = int(os.getenv('INACTIVITY_TIMEOUT', 120))  # 120 segundos = 2 minutos
+# TTL del marcador de actividad en cache (debe ser mayor que INACTIVITY_TIMEOUT)
+INACTIVITY_CACHE_TTL = int(os.getenv('INACTIVITY_CACHE_TTL', 86400))
 
 
 

@@ -210,3 +210,45 @@ class EntrevistaSerializer(serializers.ModelSerializer):
             "creada_en"
         ]
 
+    def validate(self, data):
+        """Valida que la fecha+hora esté en el futuro y que no exista otra entrevista en la misma fecha/hora."""
+        from datetime import datetime, date, time
+        from django.utils import timezone
+
+        # Obtener valores (si es update, pueden venir en self.instance)
+        fecha = data.get('fecha') if 'fecha' in data else (getattr(self.instance, 'fecha', None) if self.instance else None)
+        hora = data.get('hora') if 'hora' in data else (getattr(self.instance, 'hora', None) if self.instance else None)
+
+        if not fecha or not hora:
+            return data
+
+        # Combinar en datetime
+        try:
+            if isinstance(fecha, date) and isinstance(hora, time):
+                dt = datetime.combine(fecha, hora)
+            else:
+                # Intentar parseo suave (si vienen como strings)
+                dt = datetime.fromisoformat(f"{fecha}T{hora}")
+        except Exception:
+            raise serializers.ValidationError({'fecha': 'Fecha u hora inválida.'})
+
+        # Hacer aware si es necesario
+        try:
+            if timezone.is_naive(dt):
+                dt = timezone.make_aware(dt)
+        except Exception:
+            # Si make_aware falla por configuración, continuar con naive
+            pass
+
+        if dt <= timezone.now():
+            raise serializers.ValidationError({'non_field_errors': ['La fecha y hora deben ser en el futuro.']})
+
+        # Verificar duplicados
+        qs = Entrevista.objects.filter(fecha=fecha, hora=hora)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError({'non_field_errors': ['Ya existe una entrevista programada en esa fecha y hora.']})
+
+        return data
+

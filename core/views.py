@@ -39,6 +39,7 @@ from .serializers import VacanteSerializer
 from datetime import datetime
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
+from .middleware import CheckUserInactivityPermission
 from django.shortcuts import get_object_or_404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -162,7 +163,7 @@ import time
 User = get_user_model()
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def crear_vacante(request):
 
     # 1. Obtener rol desde Supabase
@@ -366,7 +367,7 @@ class AsignarEmpleadoView(APIView):
         )
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def listar_trabajadores(request, empresa_id):
 
     # 1) Validar rol del usuario logueado
@@ -402,14 +403,14 @@ def listar_trabajadores(request, empresa_id):
     }, status=200)
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def obtener_vacante(request, vacante_id):
     vacante = get_object_or_404(Vacante, id=vacante_id)
     serializer = VacanteSerializer(vacante)
     return Response(serializer.data, status=status.HTTP_200_OK)
 
 @api_view(['PUT', 'PATCH'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def actualizar_vacante(request, vacante_id):
     # 1. Verificar rol
     role = get_supabase_role(request.user)
@@ -527,7 +528,7 @@ def actualizar_vacante(request, vacante_id):
 
 
 @api_view(['DELETE'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def eliminar_vacante(request, vacante_id):
     # 1. Verificar rol
     role = get_supabase_role(request.user)
@@ -547,7 +548,7 @@ def eliminar_vacante(request, vacante_id):
         status=200
     )
 @api_view(['PATCH'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def publicar_vacante(request, vacante_id):
     # 1. Verificar rol
     role = get_supabase_role(request.user)
@@ -592,7 +593,7 @@ def publicar_vacante(request, vacante_id):
     }, status=200)
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def listar_vacantes(request):
     """
     Lista vacantes según el rol del usuario.
@@ -646,7 +647,7 @@ def listar_vacantes(request):
 # Mis vacantes asignadas (RRHH)
 # ----------------------------
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def mis_vacantes_asignadas(request):
     """Devuelve las vacantes a las que el RRHH autenticado fue asignado.
 
@@ -689,7 +690,7 @@ def mis_vacantes_asignadas(request):
 # Postulacion
 # ----------------------------
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def postular_vacante(request, vacante_id):
 
     # 1) Validar rol desde Supabase
@@ -857,7 +858,7 @@ Correo generado el {timezone.now().strftime('%d/%m/%Y a las %H:%M')}
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def listar_postulaciones_por_vacante(request, id_vacante):
 
     # Obtener rol e id_empresa normalizados para soportar variantes (rrhh/empleado_rrhh).
@@ -1113,7 +1114,7 @@ def export_metrics_vacante(request, vacante_id, fmt):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def export_metrics(request):
     """Exporta métricas (CSV o PDF) para una o varias vacantes.
 
@@ -1282,7 +1283,7 @@ def export_metrics(request):
 # Gestion de postulaciones
 # ----------------------------
 @api_view(['PATCH'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def actualizar_estado_postulacion(request, postulacion_id):
     role_raw = getattr(request.user, 'role', None) or get_supabase_role(request.user)
     role = normalize_role(role_raw)
@@ -1967,7 +1968,7 @@ Correo generado automáticamente el {timezone.now().strftime('%d/%m/%Y a las %H:
 # Contactar candidato
 # ----------------------------
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def contactar_candidato(request, postulacion_id):
     """
     Endpoint para que el reclutador (RRHH) o admin registre un comentario
@@ -2144,7 +2145,7 @@ class RegisterView(APIView):
 # ----------------------------
 # ----------------------------
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def asignar_rrhh_vacante(request):
     """Permite al admin asignar un empleado RRHH a una vacante específica.
 
@@ -2195,7 +2196,7 @@ def asignar_rrhh_vacante(request):
     return Response({'message': msg, 'asignacion_id': asignacion.id}, status=200)
 # Obtener postulaciones asignadas a un usuario RRHH
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def obtener_postulaciones_asignadas_rrhh(request):
     """Devuelve todas las postulaciones de las vacantes asignadas al RRHH autenticado.
 
@@ -2221,12 +2222,74 @@ def obtener_postulaciones_asignadas_rrhh(request):
     return Response({'postulaciones': serializer.data}, status=200)
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
+def mis_postulaciones(request):
+    """Lista todas las postulaciones del candidato autenticado con detalle completo de vacante y empresa."""
+    caller_role = normalize_role(getattr(request.user, 'role', None) or get_supabase_role(request.user))
+    
+    if caller_role != Roles.CANDIDATO:
+        return Response({'error': 'Solo candidatos pueden ver sus postulaciones.'}, status=403)
+
+    postulaciones = Postulacion.objects.filter(candidato=request.user).select_related(
+        'vacante', 'vacante__id_empresa', 'empresa'
+    ).order_by('-fecha_postulacion')
+
+    data = []
+    for postulacion in postulaciones:
+        vacante = postulacion.vacante
+        empresa = vacante.id_empresa if vacante and vacante.id_empresa else postulacion.empresa
+
+        vacante_data = None
+        if vacante:
+            vacante_data = {
+                'id': vacante.id,
+                'titulo': vacante.titulo,
+                'descripcion': vacante.descripcion,
+                'requisitos': vacante.requisitos,
+                'fecha_expiracion': vacante.fecha_expiracion,
+                'estado': vacante.estado,
+                'ubicacion': vacante.ubicacion,
+                'salario': vacante.salario,
+                'experiencia': vacante.experiencia,
+                'beneficios': vacante.beneficios,
+                'tipo_jornada': vacante.tipo_jornada,
+                'modalidad_trabajo': vacante.modalidad_trabajo,
+                'created_at': vacante.created_at,
+                'updated_at': vacante.updated_at,
+            }
+
+            if empresa:
+                vacante_data['empresa'] = {
+                    'id': empresa.id,
+                    'nombre': empresa.nombre,
+                    'nit': empresa.nit,
+                    'direccion': empresa.direccion,
+                    'logo_url': empresa.logo_url,
+                }
+
+        data.append({
+            'id': postulacion.id,
+            'estado': postulacion.estado,
+            'cv_url': postulacion.cv_url,
+            'fecha_postulacion': postulacion.fecha_postulacion,
+            'comentarios': postulacion.comentarios,
+            'vacante': vacante_data,
+            'empresa_nombre': empresa.nombre if empresa else None,
+            'empresa_id': empresa.id if empresa else None,
+        })
+
+    return Response({
+        'count': len(data),
+        'postulaciones': data
+    }, status=200)
+
 # ViewSet para Empresas (CRUD)
 class EmpresaViewSet(viewsets.ModelViewSet):
     """CRUD completo para empresas. Solo admins."""
     queryset = Empresa.objects.all()
     serializer_class = EmpresaSerializer
-    permission_classes = [IsAuthenticated, IsAdmin]
+    permission_classes = [IsAuthenticated, IsAdmin, CheckUserInactivityPermission]
 
 
 # ViewSet para Postulaciones (readonly para candidatos, write para RRHH/admin)
@@ -2234,7 +2297,7 @@ class PostulacionViewSet(viewsets.ModelViewSet):
     """CRUD para postulaciones. Filtrado automático según rol."""
     queryset = Postulacion.objects.all()
     serializer_class = PostulacionSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, CheckUserInactivityPermission]
 
     def get_queryset(self):
         user = self.request.user
@@ -2258,7 +2321,7 @@ class PostulacionViewSet(viewsets.ModelViewSet):
 class EntrevistaViewSet(viewsets.ModelViewSet):
     queryset = Entrevista.objects.all()
     serializer_class = EntrevistaSerializer
-    permission_classes = [IsAuthenticated, IsAdminOrRRHH]
+    permission_classes = [IsAuthenticated, IsAdminOrRRHH, CheckUserInactivityPermission]
 
     def get_queryset(self):
         user = self.request.user
@@ -2276,9 +2339,25 @@ class EntrevistaViewSet(viewsets.ModelViewSet):
             return Entrevista.objects.none()
 
 
+class SessionHeartbeatView(APIView):
+    permission_classes = [IsAuthenticated, CheckUserInactivityPermission]
+
+    def post(self, request):
+        try:
+            from django.core.cache import cache
+            from django.utils import timezone
+            cache_key = f'user_activity_{request.user.id}'
+            activity_cache_ttl = getattr(settings, 'INACTIVITY_CACHE_TTL', 86400)
+            cache.set(cache_key, timezone.now().isoformat(), activity_cache_ttl)
+        except Exception:
+            pass
+
+        return Response({"detail": "Actividad registrada correctamente."}, status=200)
+
+
 # Perfil del usuario autenticado
 @api_view(["GET", "PUT", "PATCH"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def mi_perfil(request):
     """
     GET: Devuelve la información del perfil del usuario autenticado.
@@ -2300,7 +2379,7 @@ def mi_perfil(request):
 
 # Vista para actualizar la hoja de vida (CV)
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def actualizar_hoja_vida(request):
     """
     Permite al usuario subir o actualizar su archivo de hoja de vida.
@@ -2349,7 +2428,7 @@ def actualizar_hoja_vida(request):
 
 # Crear favorito
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def crear_favorito(request):
     """
     Permite al usuario autenticado marcar una vacante como favorita.
@@ -2380,7 +2459,7 @@ def crear_favorito(request):
 
 # Listar favoritos
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def listar_favoritos(request):
     """
     Devuelve la lista de vacantes favoritas del usuario autenticado.
@@ -2392,7 +2471,7 @@ def listar_favoritos(request):
 
 # Eliminar favorito
 @api_view(['DELETE'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def eliminar_favorito(request, vacante_id):
     """
     Elimina una vacante de los favoritos del usuario autenticado.
@@ -2409,7 +2488,7 @@ def eliminar_favorito(request, vacante_id):
 # Perfil de candidato (público, visto por RRHH/Admin)
 # ----------------------------
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdminOrRRHH])
+@permission_classes([IsAuthenticated, IsAdminOrRRHH, CheckUserInactivityPermission])
 def perfil_candidato(request, candidato_id):
     """
     Devuelve el perfil completo de un candidato.
@@ -2495,7 +2574,7 @@ def upload_to_supabase_with_retry(bucket_path, file_bytes, file_name, content_ty
 # Contactar candidato
 # ----------------------------
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def contactar_candidato(request, postulacion_id):
     """
     Endpoint para que el reclutador (RRHH) o admin registre un comentario
@@ -2756,12 +2835,31 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
+    
+    def post(self, request, *args, **kwargs):
+        # Llamar al flujo estándar de obtención de tokens
+        response = super().post(request, *args, **kwargs)
+        try:
+            if response.status_code == 200 and isinstance(response.data, dict):
+                user_info = response.data.get("user")
+                if user_info and user_info.get("id"):
+                    from django.core.cache import cache
+                    from django.utils import timezone
+                    from django.conf import settings as dj_settings
+                    user_id = user_info.get("id")
+                    cache_key = f'user_activity_{user_id}'
+                    activity_cache_ttl = getattr(dj_settings, 'INACTIVITY_CACHE_TTL', 86400)
+                    cache.set(cache_key, timezone.now().isoformat(), activity_cache_ttl)
+        except Exception:
+            pass
+
+        return response
 # ----------------------------
 # Empresa
 # ----------------------------
 class EmpresaViewSet(viewsets.ModelViewSet):
     serializer_class = EmpresaSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, CheckUserInactivityPermission]
 
     def get_queryset(self):
         # Solo muestra las empresas del usuario autenticado
@@ -2859,7 +2957,7 @@ def listar_empresas(request):
 User = get_user_model()
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, CheckUserInactivityPermission])
 def asignar_rrhh_a_vacante(request, vacante_id):
     # Verificar si el usuario tiene rol 'admin' (resolver role de forma segura)
     caller_role_raw = getattr(request.user, 'role', None) or get_supabase_role(request.user)
@@ -2958,7 +3056,7 @@ def asignar_rrhh_a_vacante(request, vacante_id):
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all().order_by("-id")
     serializer_class = UserSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    permission_classes = [permissions.IsAuthenticated, IsAdmin, CheckUserInactivityPermission]
 
 
 class UsuarioViewSet(viewsets.ViewSet):
@@ -3157,7 +3255,7 @@ class PasswordResetConfirmView(APIView):
         return Response({"detail": "Contraseña restablecida correctamente"}, status=status.HTTP_200_OK)
     
 class PerfilView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, CheckUserInactivityPermission]
 
     def get(self, request):
         user = request.user
@@ -3189,7 +3287,7 @@ class PerfilView(APIView):
 # DATOS ADICIONALES DEL PERFIL DE USUARIO
 
 class PerfilUsuarioView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, CheckUserInactivityPermission]
     parser_classes = [parsers.MultiPartParser, parsers.FormParser, parsers.JSONParser]
 
     # ========================================
@@ -3318,7 +3416,7 @@ class PerfilUsuarioView(APIView):
 
 
 class FavoritosView(APIView):
-    permission_classes = [IsAuthenticated, IsAdminOrRRHH]   # Solo admin y RRHH pueden gestionar favoritos
+    permission_classes = [IsAuthenticated, IsAdminOrRRHH, CheckUserInactivityPermission]   # Solo admin y RRHH pueden gestionar favoritos
     # ---------------------------
     # GET → Listar favoritos
     # ---------------------------
@@ -3427,7 +3525,7 @@ from django.core.mail import EmailMultiAlternatives
 logger = logging.getLogger(__name__)
 
 class EntrevistaView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, CheckUserInactivityPermission]
 
     # ----------------------------
     # Generar archivo .ics

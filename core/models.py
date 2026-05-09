@@ -2,6 +2,8 @@ from django.db import models
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
+from django.utils import timezone
+from django.db.models import UniqueConstraint
 import os
 from django.contrib.auth import get_user_model
 
@@ -279,5 +281,46 @@ class Entrevista(models.Model):
 
     creada_en = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        constraints = [
+            UniqueConstraint(fields=['fecha', 'hora'], name='unique_entrevista_fecha_hora')
+        ]
+
     def __str__(self):
         return f"Entrevista {self.id} para {self.postulacion}"
+
+    def clean(self):
+        """Validaciones:
+        - La fecha+hora debe ser en el futuro
+        - No debe existir otra entrevista en la misma fecha y hora
+        """
+        # Combinar fecha y hora en un datetime
+        from datetime import datetime
+        try:
+            dt = datetime.combine(self.fecha, self.hora)
+        except Exception:
+            raise ValidationError('Fecha u hora inválida')
+
+        # Convertir a aware si es necesario
+        try:
+            if timezone.is_naive(dt):
+                dt = timezone.make_aware(dt)
+        except Exception:
+            # Si USE_TZ está desactivado, timezone.make_aware puede fallar; en ese caso comparamos naive
+            pass
+
+        now = timezone.now()
+        if dt <= now:
+            raise ValidationError('La fecha y hora de la entrevista deben ser en el futuro.')
+
+        # Verificar conflictos (otro registro con misma fecha y hora)
+        qs = Entrevista.objects.filter(fecha=self.fecha, hora=self.hora)
+        if self.pk:
+            qs = qs.exclude(pk=self.pk)
+        if qs.exists():
+            raise ValidationError('Ya existe una entrevista programada en esa fecha y hora.')
+
+    def save(self, *args, **kwargs):
+        # Ejecutar validaciones antes de guardar
+        self.full_clean()
+        super().save(*args, **kwargs)
